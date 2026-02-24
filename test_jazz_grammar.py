@@ -20,11 +20,23 @@ class JazzGrammarTests(unittest.TestCase):
         self.assertIn(("II7@3", "V7"), replacements)
         self.assertIn(("IIm7@3", "V7"), replacements)
 
-    def test_rule_6_detected(self) -> None:
+    def test_rule_6_detected_supertonic_minor_variant(self) -> None:
         apps = find_next_steps(["I@2", "I@2", "IIm7@2"])
         rule6 = [app for app in apps if app.rule == "6"]
         self.assertEqual(len(rule6), 1)
         self.assertEqual(rule6[0].replacement, ("I@2", "#I°7@2", "IIm7@2"))
+
+    def test_rule_6_detected_leading_tone_variant(self) -> None:
+        apps = find_next_steps(["I@2", "I@2", "VII@2"])
+        rule6 = [app for app in apps if app.rule == "6"]
+        self.assertEqual(len(rule6), 1)
+        self.assertEqual(rule6[0].replacement, ("I@2", "#I°7@2", "VII@2"))
+
+    def test_rule_6_detected_dominant_variant(self) -> None:
+        apps = find_next_steps(["I@2", "I@2", "V7@2"])
+        rule6 = [app for app in apps if app.rule == "6"]
+        self.assertEqual(len(rule6), 1)
+        self.assertEqual(rule6[0].replacement, ("I@2", "#I°7@2", "V7@2"))
 
 
 if __name__ == "__main__":

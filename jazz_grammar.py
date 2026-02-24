@@ -244,6 +244,10 @@ def sharpen_root(root: Root) -> Root:
     return shift_root(root, degree_steps=0, semitone_steps=1)
 
 
+def leading_tone_root(root: Root) -> Root:
+    return shift_root(root, degree_steps=6, semitone_steps=-1)
+
+
 def replace_span(
     seq: Sequence[TimedChord],
     start: int,
@@ -251,6 +255,18 @@ def replace_span(
     replacement: Sequence[TimedChord],
 ) -> tuple[TimedChord, ...]:
     return tuple(seq[:start]) + tuple(replacement) + tuple(seq[end:])
+
+
+def format_result_with_replacement_span(app: RuleApplication) -> str:
+    tokens = list(app.result)
+    if not tokens:
+        return ""
+    span_start = app.start
+    span_end = app.start + len(app.replacement)
+    if 0 <= span_start < len(tokens) and 0 < span_end <= len(tokens) and span_start < span_end:
+        tokens[span_start] = "[" + tokens[span_start]
+        tokens[span_end - 1] = tokens[span_end - 1] + "]"
+    return " / ".join(tokens)
 
 
 def rule_1(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
@@ -414,17 +430,30 @@ def rule_5(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
 
 
 def rule_6(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
-    # OCR around Rule 6 is corrupted in the source text.
-    # Implemented assumption: x(m) x(m) Stxm(7) -> x(m) #x°7 Stxm(7). Nice.
+    # completed rule6:
+    # x(m) x(m) y -> x(m) #x°7 y
+    # where y is one of:
+    # 1) Stxm(7), 2) leading tone of x, 3) dominant of x
     for i in range(len(seq) - 2):
         first, second, third = seq[i], seq[i + 1], seq[i + 2]
         if not (first.chord == second.chord and first.chord.is_plain()):
             continue
-        expected_root = supertonic_root(first.chord.root)
-        if third.chord.root != expected_root:
+
+        third_root = third.chord.root
+        supertonic = supertonic_root(first.chord.root)
+        lead_tone = leading_tone_root(first.chord.root)
+        dominant = dominant_root(first.chord.root)
+
+        stxm_match = (
+            third_root == supertonic
+            and third.chord.minor
+            and not third.chord.diminished7
+        )
+        leading_tone_match = third_root == lead_tone and not third.chord.diminished7
+        dominant_match = third_root == dominant and not third.chord.diminished7
+        if not (stxm_match or leading_tone_match or dominant_match):
             continue
-        if not third.chord.minor or third.chord.diminished7:
-            continue
+
         replacement = (
             TimedChord(chord=first.chord, duration=first.duration),
             TimedChord(chord=Chord(root=sharpen_root(first.chord.root), diminished7=True), duration=second.duration),
@@ -438,12 +467,8 @@ def rule_6(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
             before=timed_chord_tokens((first, second, third)),
             replacement=timed_chord_tokens(replacement),
             result=timed_chord_tokens(result),
-            assumption="Rule 6 reconstructed from OCR-corrupted formula.",
+            assumption=None,
         )
-
-# Fixing corruption: there are 3 sub rules associated with rule 6, just depending on the last chord.
-# the last chord can be either st x m(7), leading tone of x, or the dominant of x. In either case, the second x chord would be replaced by #x°7.
-# feel free to change this comment to "completed rule6" when everything is implemented.
 
 RULE_FUNCTIONS = (rule_1, rule_2, rule_3a, rule_3b, rule_4, rule_5, rule_6)
 
@@ -510,6 +535,7 @@ def main() -> None:
             {
                 "rule": app.rule,
                 "span": [app.start, app.end],
+                "replacement_span_in_result": [app.start, app.start + len(app.replacement)],
                 "before": list(app.before),
                 "replacement": list(app.replacement),
                 "result": list(app.result),
@@ -525,11 +551,12 @@ def main() -> None:
         return
 
     for idx, app in enumerate(applications, start=1):
-        span_display = f"{app.start + 1}-{app.end}"
+        span_display = f"[{app.start}, {app.end})"
         print(f"{idx}. Rule {app.rule} @ chords {span_display}")
         print(f"   before:      {' '.join(app.before)}")
         print(f"   replacement: {' '.join(app.replacement)}")
         print(f"   result:      {' / '.join(app.result)}")
+        print(f"   on result:   {format_result_with_replacement_span(app)}")
         if app.assumption:
             print(f"   note:        {app.assumption}")
 
