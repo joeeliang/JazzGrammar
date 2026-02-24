@@ -1,6 +1,6 @@
 import unittest
 
-from jazz_grammar import find_next_steps, parse_timed_chord_token
+from jazz_grammar import find_next_steps, explore_sequences_by_depth, parse_timed_chord_token
 
 
 class JazzGrammarTests(unittest.TestCase):
@@ -37,6 +37,20 @@ class JazzGrammarTests(unittest.TestCase):
         rule6 = [app for app in apps if app.rule == "6"]
         self.assertEqual(len(rule6), 1)
         self.assertEqual(rule6[0].replacement, ("I@2", "#I°7@2", "V7@2"))
+
+    def test_depth_levels_include_all_sequences_per_level(self) -> None:
+        levels = explore_sequences_by_depth(["I@2"], depth=2)
+        self.assertIn(0, levels)
+        self.assertIn(1, levels)
+        self.assertIn(2, levels)
+        self.assertEqual(levels[0], [("I@2",)])
+        self.assertEqual(set(levels[1]), {("I", "I"), ("I", "IV")})
+        self.assertGreaterEqual(len(levels[2]), 1)
+
+    def test_depth_level_sequences_are_unique(self) -> None:
+        levels = explore_sequences_by_depth(["I@2"], depth=3)
+        for sequences in levels.values():
+            self.assertEqual(len(sequences), len(set(sequences)))
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ ROMAN_TO_DEGREE = {
 DEGREE_TO_ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII"]
 MAJOR_SCALE_SEMITONES = [0, 2, 4, 5, 7, 9, 11]
 ROOT_RE = re.compile(r"^([b#♭♯]*)(VII|VI|IV|V|III|II|I)$")
+DEFAULT_SEARCH_DEPTH = 3
 
 
 @dataclass(frozen=True)
@@ -495,6 +496,49 @@ def find_next_steps(tokens: Sequence[str | TimedChord]) -> list[RuleApplication]
     return out
 
 
+def explore_sequences_by_depth(
+    tokens: Sequence[str | TimedChord],
+    depth: int = DEFAULT_SEARCH_DEPTH,
+) -> dict[int, list[tuple[str, ...]]]:
+    if depth < 0:
+        raise ValueError("Depth must be non-negative.")
+
+    start = tuple(coerce_timed_chord(token).to_token() for token in tokens)
+    levels: dict[int, list[tuple[str, ...]]] = {0: [start]}
+    seen: set[tuple[str, ...]] = {start}
+    frontier: set[tuple[str, ...]] = {start}
+
+    for level in range(1, depth + 1):
+        next_frontier: set[tuple[str, ...]] = set()
+        for seq in frontier:
+            for app in find_next_steps(seq):
+                candidate = app.result
+                if candidate in seen:
+                    continue
+                next_frontier.add(candidate)
+        levels[level] = sorted(next_frontier)
+        seen.update(next_frontier)
+        frontier = next_frontier
+    return levels
+
+
+def debug_one_step(tokens: Sequence[str | TimedChord]) -> list[dict[str, Any]]:
+    applications = find_next_steps(tokens)
+    return [
+        {
+            "rule": app.rule,
+            "span": [app.start, app.end],  # 0-based
+            "replacement_span_in_result": [app.start, app.start + len(app.replacement)],
+            "before": list(app.before),
+            "replacement": list(app.replacement),
+            "result": list(app.result),
+            "result_with_span_marked": format_result_with_replacement_span(app),
+            "assumption": app.assumption,
+        }
+        for app in applications
+    ]
+
+
 def parse_progression_arg(raw: str) -> list[TimedChord]:
     raw = raw.strip()
     if raw.startswith("["):
@@ -507,7 +551,7 @@ def parse_progression_arg(raw: str) -> list[TimedChord]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Find one-step Steedman jazz-grammar rewrites (rules 1-6).",
+        description="Explore Steedman jazz-grammar rewrites by depth (rules 1-6).",
     )
     parser.add_argument(
         "progression",
@@ -528,37 +572,33 @@ def main() -> None:
     if not args.progression:
         parser.error("Provide a progression.")
     timed_progression = parse_progression_arg(args.progression)
-    applications = find_next_steps(timed_progression)
+    levels = explore_sequences_by_depth(timed_progression, depth=DEFAULT_SEARCH_DEPTH)
 
     if args.json:
-        payload = [
-            {
-                "rule": app.rule,
-                "span": [app.start, app.end],
-                "replacement_span_in_result": [app.start, app.start + len(app.replacement)],
-                "before": list(app.before),
-                "replacement": list(app.replacement),
-                "result": list(app.result),
-                "assumption": app.assumption,
-            }
-            for app in applications
-        ]
+        payload = {
+            "depth": DEFAULT_SEARCH_DEPTH,
+            "levels": [
+                {
+                    "level": level,
+                    "count": len(sequences),
+                    "sequences": [list(seq) for seq in sequences],
+                }
+                for level, sequences in levels.items()
+            ],
+        }
         print(json.dumps(payload, indent=2))
         return
 
-    if not applications:
-        print("No applicable next-step rewrites found.")
-        return
-
-    for idx, app in enumerate(applications, start=1):
-        span_display = f"[{app.start}, {app.end})"
-        print(f"{idx}. Rule {app.rule} @ chords {span_display}")
-        print(f"   before:      {' '.join(app.before)}")
-        print(f"   replacement: {' '.join(app.replacement)}")
-        print(f"   result:      {' / '.join(app.result)}")
-        print(f"   on result:   {format_result_with_replacement_span(app)}")
-        if app.assumption:
-            print(f"   note:        {app.assumption}")
+    print(f"Depth search (max depth = {DEFAULT_SEARCH_DEPTH})")
+    for level, sequences in levels.items():
+        count = len(sequences)
+        noun = "sequence" if count == 1 else "sequences"
+        print(f"\nLevel {level} ({count} {noun})")
+        if not sequences:
+            print("  (none)")
+            continue
+        for idx, sequence in enumerate(sequences, start=1):
+            print(f"  {idx}. {' / '.join(sequence)}")
 
 
 if __name__ == "__main__":
