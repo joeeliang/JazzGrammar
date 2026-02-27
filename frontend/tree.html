@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        .node circle { fill: #333; }
+        .node text { font: 12px sans-serif; }
+        .link { fill: none; stroke: #555; stroke-width: 2px; }
+        svg { border: 1px solid #ccc; background: #f9f9f9; }
+    </style>
+</head>
+<body>
+    <div id="tree-container"></div>
+
+    <script>
+        // 1. Data Structure (Musical Hierarchy)
+        const data = {
+            name: "Root",
+            children: [
+                {
+                    name: "Phrase A",
+                    children: [
+                        { name: "Note 1" },
+                        { name: "Note 2" }
+                    ]
+                },
+                {
+                    name: "Phrase B",
+                    children: [
+                        { name: "Note 3" },
+                        { name: "Note 4" }
+                    ]
+                }
+            ]
+        };
+
+        // 2. Dimensions
+        const width = 600;
+        const height = 400;
+        const margin = {top: 50, right: 50, bottom: 50, left: 50};
+
+        const svg = d3.select("#tree-container")
+            .append("svg")
+            .attr("width", width)
+            .attr("height", height)
+            .append("g")
+            .attr("transform", `translate(${margin.left},${margin.top})`);
+
+        // 3. Create the Tree Layout
+        const treeLayout = d3.tree().size([width - margin.left - margin.right, height - margin.top - margin.bottom]);
+        const root = d3.hierarchy(data);
+        treeLayout(root);
+
+        // 4. Draw Links (Straight lines for GTTM style)
+        svg.selectAll(".link")
+            .data(root.links())
+            .enter()
+            .append("line")
+            .attr("class", "link")
+            .attr("x1", d => d.source.x)
+            .attr("y1", d => d.source.y)
+            .attr("x2", d => d.target.x)
+            .attr("y2", d => d.target.y);
+
+        // 5. Draw Nodes
+        const node = svg.selectAll(".node")
+            .data(root.descendants())
+            .enter()
+            .append("g")
+            .attr("class", "node")
+            .attr("transform", d => `translate(${d.x},${d.y})`);
+
+        node.append("circle").attr("r", 4);
+
+        node.append("text")
+            .attr("dy", d => d.children ? -15 : 20) // Text above if it has children, below if leaf
+            .attr("text-anchor", "middle")
+            .text(d => d.data.name);
+
+    </script>
+</body>
+</html>
