@@ -28,7 +28,7 @@ ROMAN_TO_DEGREE = {
 DEGREE_TO_ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII"]
 MAJOR_SCALE_SEMITONES = [0, 2, 4, 5, 7, 9, 11]
 ROOT_RE = re.compile(r"^([b#♭♯]*)(VII|VI|IV|V|III|II|I)$")
-DEFAULT_SEARCH_DEPTH = 3
+DEFAULT_SEARCH_DEPTH = 1
 
 
 @dataclass(frozen=True)

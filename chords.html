@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Roman Numeral Chords</title>
+    <style>
+      :root { --paper: #fff; --ink: #000; }
+      html, body { margin: 0; width: 100%; height: 100%; background: var(--paper); color: var(--ink); }
+      body { overflow: hidden; font-family: "Latin Modern Roman", "CMU Serif", "Times New Roman", serif; }
+      #notes-display { width: 100dvw; height: 100dvh; }
+      #notes-display svg { width: 100%; height: 100%; touch-action: none; cursor: grab; }
+      #notes-display svg.is-dragging { cursor: grabbing; }
+      .ui-panel { position: fixed; z-index: 3; background: rgb(255 255 255 / 92%); border: 1px solid #000; padding: 10px 12px; backdrop-filter: blur(2px); }
+      #test-tree-btn { top: 12px; left: 12px; font-family: inherit; font-size: 16px; cursor: pointer; }
+      #controls { top: 12px; right: 12px; width: min(330px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; }
+      #controls h2 { margin: 0 0 8px; font-size: 17px; font-weight: 600; }
+      .toggle-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px; }
+      .slider-row { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: center; margin-bottom: 8px; }
+      .slider-row label { font-size: 13px; }
+      .slider-row input[type="range"] { grid-column: 1 / span 2; width: 100%; }
+      .slider-value { font-size: 12px; min-width: 48px; text-align: right; }
+      .chord, .tree-chord, .final-chord { text-anchor: middle; dominant-baseline: middle; letter-spacing: 0.04em; fill: var(--ink); }
+      .chord { font-size: clamp(28px, 4vw, 54px); }
+      .tree-chord, .final-chord { font-size: clamp(22px, 3vw, 36px); }
+      .branch { stroke: #000; stroke-width: 1.4; }
+      .final-drop { stroke: #000; stroke-width: 1.2; }
+      .subtree-box { stroke-width: 1.4; pointer-events: none; }
+      @media (max-width: 820px) { #controls { width: min(300px, calc(100vw - 24px)); max-height: min(50vh, 420px); } }
+    </style>
+  </head>
+  <body>
+    <button id="test-tree-btn" class="ui-panel" type="button">Test call (hold)</button>
+    <aside id="controls" class="ui-panel" aria-label="Layout controls">
+      <h2>Layout Controls</h2>
+      <div class="toggle-row"><input id="toggle-boxes" type="checkbox" checked /><label for="toggle-boxes">Show bounding boxes</label></div>
+      <div class="slider-row"><label for="sibling-gravity">Sibling gravity</label><span id="sibling-gravity-value" class="slider-value">4200</span><input id="sibling-gravity" type="range" min="0" max="50000" step="100" /></div>
+      <div class="slider-row"><label for="sibling-repel">Sibling repel</label><span id="sibling-repel-value" class="slider-value">9500</span><input id="sibling-repel" type="range" min="0" max="80000" step="100" /></div>
+    </aside>
+    <div id="notes-display"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script>
+      const ROOT_CHORDS = ["I", "ii", "iii", "IV", "V", "vi"];
+      const ROMAN_POOL = ["ii", "V", "I", "vi", "iii", "IV", "vii°"];
+      const CFG = {
+        maxDepth: 6,
+        layerGap: 110,
+        subtreePadX: 10,
+        subtreePadY: 10,
+        labelPadX: 12,
+        labelPadY: 8,
+        siblingGravity: 4200,
+        siblingRepel: 9500
+      };
+      const BOX_COLORS = [
+        { stroke: "#1f77b4", fill: "rgba(31, 119, 180, 0.08)" },
+        { stroke: "#2ca02c", fill: "rgba(44, 160, 44, 0.08)" },
+        { stroke: "#d62728", fill: "rgba(214, 39, 40, 0.08)" },
+        { stroke: "#ff7f0e", fill: "rgba(255, 127, 14, 0.08)" },
+        { stroke: "#17becf", fill: "rgba(23, 190, 207, 0.08)" },
+        { stroke: "#8c564b", fill: "rgba(140, 86, 75, 0.08)" },
+        { stroke: "#7f7f7f", fill: "rgba(127, 127, 127, 0.08)" }
+      ];
+
+      let width = window.innerWidth;
+      let height = window.innerHeight;
+      let holdTimer = null;
+      let nextId = 0;
+      let showBoxes = true;
+      let finalRowY = height / 2 + CFG.layerGap * 2;
+
+      const nodes = [];
+      const edges = [];
+      const layers = [];
+      const byId = new Map();
+      const bounds = new Map();
+      let finals = [];
+
+      const measureCanvas = document.createElement("canvas");
+      const measureCtx = measureCanvas.getContext("2d");
+
+      const svg = d3.select("#notes-display").append("svg")
+        .attr("width", width)
+        .attr("height", height)
+        .attr("role", "img")
+        .attr("aria-label", "Roman numeral tree with recursive subtree boxes");
+      const viewport = svg.append("g");
+      const boxLayer = viewport.append("g");
+      const edgeLayer = viewport.append("g");
+      const nodeLayer = viewport.append("g");
+      const finalLayer = viewport.append("g");
+
+      let boxSel = boxLayer.selectAll("rect.subtree-box");
+      let edgeSel = edgeLayer.selectAll("line.branch");
+      let nodeSel = nodeLayer.selectAll("text.node");
+      let finalDropSel = finalLayer.selectAll("line.final-drop");
+      let finalChordSel = finalLayer.selectAll("text.final-chord");
+
+      svg.call(
+        d3.zoom().scaleExtent([0.28, 4.2])
+          .on("start", () => svg.classed("is-dragging", true))
+          .on("zoom", (event) => viewport.attr("transform", event.transform))
+          .on("end", () => svg.classed("is-dragging", false))
+      ).on("dblclick.zoom", null);
+
+      const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+      const fontPx = (kind) => (kind === "root" ? clamp(width * 0.04, 28, 54) : clamp(width * 0.03, 22, 36));
+      const labelBox = (label, px) => {
+        measureCtx.font = `${px}px "Latin Modern Roman", "CMU Serif", "Times New Roman", serif`;
+        const widthPx = measureCtx.measureText(label).width;
+        return { width: widthPx + CFG.labelPadX * 2, height: px * 1.1 + CFG.labelPadY * 2 };
+      };
+      const nodeBox = (node) => labelBox(node.label, fontPx(node.kind));
+
+      function makeNode({ label, kind, layer, index, parentId = null, x = 0, y = 0 }) {
+        const node = { id: `n${nextId++}`, label, kind, layer, index, parentId, children: [], x, y };
+        nodes.push(node);
+        byId.set(node.id, node);
+        if (parentId && byId.has(parentId)) byId.get(parentId).children.push(node.id);
+        return node;
+      }
+
+      function rootMiddleNode() {
+        const idx = Math.floor(ROOT_CHORDS.length / 2);
+        return nodes.find((n) => n.kind === "root" && n.index === idx);
+      }
+
+      function initRoots() {
+        const y = height / 2;
+        const widths = ROOT_CHORDS.map((c) => labelBox(c, fontPx("root")).width);
+        const gap = 28;
+        const total = widths.reduce((a, b) => a + b, 0) + gap * Math.max(0, widths.length - 1);
+        let cursor = width / 2 - total / 2;
+        ROOT_CHORDS.forEach((label, index) => {
+          const w = widths[index];
+          makeNode({ label, kind: "root", layer: 0, index, x: cursor + w / 2, y });
+          cursor += w + gap;
+        });
+      }
+
+      function addGeneration() {
+        if (layers.length >= CFG.maxDepth) return;
+        const depth = layers.length + 1;
+        const parents = depth === 1 ? [rootMiddleNode()] : layers[depth - 2].map((id) => byId.get(id));
+        const newLayer = [];
+
+        parents.forEach((parent, pIndex) => {
+          const leftIndex = pIndex * 2;
+          const rightIndex = pIndex * 2 + 1;
+          const left = makeNode({ label: ROMAN_POOL[(leftIndex + depth) % ROMAN_POOL.length], kind: "tree", layer: depth, index: leftIndex, parentId: parent.id, x: parent.x - 18, y: parent.y + CFG.layerGap }); // some constants here, weird
+          const right = makeNode({ label: ROMAN_POOL[(rightIndex + depth + 1) % ROMAN_POOL.length], kind: "tree", layer: depth, index: rightIndex, parentId: parent.id, x: parent.x + 18, y: parent.y + CFG.layerGap });
+          edges.push({ id: `e-${parent.id}-${left.id}`, sourceId: parent.id, targetId: left.id });
+          edges.push({ id: `e-${parent.id}-${right.id}`, sourceId: parent.id, targetId: right.id });
+          newLayer.push(left.id, right.id);
+        });
+
+        layers.push(newLayer);
+        bindSelections();
+      }
+
+      function computeFinals() {
+        finals = nodes.filter((n) => n.children.length === 0)
+          .sort((a, b) => a.x - b.x || a.layer - b.layer || a.index - b.index)
+          .map((n) => ({ id: `f-${n.id}`, sourceId: n.id, label: n.label, layer: n.layer }));
+        const deepest = finals.reduce((mx, f) => Math.max(mx, f.layer), 0);
+        finalRowY = height / 2 + (deepest + 2) * CFG.layerGap;
+      }
+
+      function computeSubtreeBox(nodeId) {
+        if (bounds.has(nodeId)) return bounds.get(nodeId);
+        const node = byId.get(nodeId);
+        const own = nodeBox(node);
+        let left = node.x - own.width / 2;
+        let right = node.x + own.width / 2;
+        let top = node.y - own.height / 2;
+        let bottom = node.y + own.height / 2;
+
+        if (node.children.length === 0) {
+          const final = labelBox(node.label, clamp(width * 0.03, 22, 34));
+          left = Math.min(left, node.x - final.width / 2);
+          right = Math.max(right, node.x + final.width / 2);
+          top = Math.min(top, node.y + 16, finalRowY - final.height / 2); // again, some constants
+          bottom = Math.max(bottom, finalRowY - 20, finalRowY + final.height / 2); // here as well
+        } else {
+          node.children.forEach((childId) => {
+            const child = byId.get(childId);
+            const box = computeSubtreeBox(childId);
+            left = Math.min(left, box.left);
+            right = Math.max(right, box.right);
+            top = Math.min(top, box.top, Math.min(node.y + 12, child.y - 18));
+            bottom = Math.max(bottom, box.bottom, Math.max(node.y + 12, child.y - 18));
+          });
+        }
+
+        const box = { left, right, top, bottom, width: right - left, height: bottom - top };
+        bounds.set(nodeId, box);
+        return box;
+      }
+
+      const recomputeBoxes = () => {
+        bounds.clear();
+        nodes.filter((n) => n.kind === "root").sort((a, b) => a.index - b.index).forEach((r) => computeSubtreeBox(r.id));
+      };
+      const syncGeometry = () => { computeFinals(); recomputeBoxes(); };
+
+      function shiftSubtree(nodeId, dx) {
+        if (!Number.isFinite(dx) || dx === 0) return;
+        const stack = [nodeId];
+        while (stack.length) {
+          const id = stack.pop();
+          const n = byId.get(id);
+          n.x += dx;
+          n.children.forEach((childId) => stack.push(childId));
+        }
+      }
+
+      function siblingGroups(includeSingles = false) {
+        const groups = [];
+        const roots = nodes.filter((n) => n.kind === "root").sort((a, b) => a.index - b.index).map((n) => n.id);
+        if (roots.length >= (includeSingles ? 1 : 2)) groups.push({ id: "group-root", parentId: null, childIds: roots });
+
+        nodes.forEach((parent) => {
+          if (parent.children.length < (includeSingles ? 1 : 2)) return;
+          const childIds = [...parent.children].sort((a, b) => byId.get(a).index - byId.get(b).index);
+          groups.push({ id: `group-${parent.id}`, parentId: parent.id, childIds });
+        });
+
+        return groups;
+      }
+
+      // Only pairwise attract + repel on subtree centers.
+      function applySiblingForces() {
+        const ax = new Map(nodes.map((n) => [n.id, 0]));
+        const eps2 = 60 * 60 + 1;
+
+        siblingGroups(true).forEach((group) => {
+          const ids = group.childIds;
+          for (let i = 0; i < ids.length; i += 1) {
+            for (let j = i + 1; j < ids.length; j += 1) {
+              const aBox = bounds.get(ids[i]);
+              const bBox = bounds.get(ids[j]);
+              const aCx = (aBox.left + aBox.right) / 2;
+              const bCx = (bBox.left + bBox.right) / 2;
+              const dx = bCx - aCx;
+              const absDx = Math.abs(dx);
+              const sign = dx >= 0 ? 1 : -1;
+              const dist2 = dx * dx + eps2;
+              const attract = (CFG.siblingGravity * absDx) / 100000;
+              const repel = CFG.siblingRepel / dist2;
+              const force = clamp((attract - repel) * sign, -8, 8);
+
+              ax.set(ids[i], ax.get(ids[i]) + force);
+              ax.set(ids[j], ax.get(ids[j]) - force);
+            }
+          }
+        });
+
+        return ax;
+      }
+
+      function stepLayout() {
+        const y0 = height / 2;
+        nodes.forEach((n) => { n.y = y0 + n.layer * CFG.layerGap; });
+        syncGeometry();
+
+        const ax = applySiblingForces();
+        const movers = new Set();
+        siblingGroups(true).forEach((g) => g.childIds.forEach((id) => movers.add(id)));
+        [...movers].sort((a, b) => byId.get(a).layer - byId.get(b).layer).forEach((id) => {
+          shiftSubtree(id, ax.get(id));
+        });
+
+        syncGeometry();
+      }
+
+      function bindSelections() {
+        syncGeometry();
+        edgeSel = edgeLayer.selectAll("line.branch").data(edges, (d) => d.id).join("line").attr("class", "branch");
+        nodeSel = nodeLayer.selectAll("text.node").data(nodes, (d) => d.id).join("text").attr("class", (d) => (d.kind === "root" ? "chord node" : "tree-chord node")).text((d) => d.label);
+        boxSel = boxLayer.selectAll("rect.subtree-box").data(nodes, (d) => d.id).join("rect").attr("class", "subtree-box");
+        finalDropSel = finalLayer.selectAll("line.final-drop").data(finals, (d) => d.id).join("line").attr("class", "final-drop");
+        finalChordSel = finalLayer.selectAll("text.final-chord").data(finals, (d) => d.id).join("text").attr("class", "final-chord").text((d) => d.label);
+      }
+
+      function render() {
+        stepLayout();
+
+        boxSel
+          .attr("x", (d) => bounds.get(d.id).left - CFG.subtreePadX)
+          .attr("y", (d) => bounds.get(d.id).top - CFG.subtreePadY)
+          .attr("width", (d) => bounds.get(d.id).width + CFG.subtreePadX * 2)
+          .attr("height", (d) => bounds.get(d.id).height + CFG.subtreePadY * 2)
+          .attr("stroke", (d) => BOX_COLORS[d.layer % BOX_COLORS.length].stroke)
+          .attr("fill", (d) => BOX_COLORS[d.layer % BOX_COLORS.length].fill)
+          .attr("display", showBoxes ? null : "none");
+
+        nodeSel.attr("x", (d) => d.x).attr("y", (d) => d.y);
+        edgeSel.attr("x1", (d) => byId.get(d.sourceId).x).attr("y1", (d) => byId.get(d.sourceId).y + 12).attr("x2", (d) => byId.get(d.targetId).x).attr("y2", (d) => byId.get(d.targetId).y - 18);
+        finalDropSel.attr("x1", (d) => byId.get(d.sourceId).x).attr("y1", (d) => byId.get(d.sourceId).y + 16).attr("x2", (d) => byId.get(d.sourceId).x).attr("y2", finalRowY - 20);
+        finalChordSel.attr("x", (d) => byId.get(d.sourceId).x).attr("y", finalRowY);
+
+        requestAnimationFrame(render);
+      }
+
+      function stopGrow() {
+        if (holdTimer !== null) {
+          clearInterval(holdTimer);
+          holdTimer = null;
+        }
+      }
+
+      function startGrow() {
+        if (holdTimer !== null) return;
+        addGeneration();
+        holdTimer = setInterval(() => {
+          addGeneration();
+          if (layers.length >= CFG.maxDepth) stopGrow();
+        }, 340);
+      }
+
+      function bindSlider({ id, key, format = (v) => String(v), parse = (v) => Number(v), onInput = null }) {
+        const slider = document.getElementById(id);
+        const valueEl = document.getElementById(`${id}-value`);
+        slider.value = CFG[key];
+        valueEl.textContent = format(CFG[key]);
+        slider.addEventListener("input", () => {
+          CFG[key] = parse(slider.value);
+          valueEl.textContent = format(CFG[key]);
+          if (onInput) onInput();
+        });
+      }
+
+      function setupControls() {
+        const toggle = document.getElementById("toggle-boxes");
+        toggle.checked = showBoxes;
+        toggle.addEventListener("change", () => { showBoxes = toggle.checked; });
+
+        bindSlider({ id: "sibling-gravity", key: "siblingGravity" });
+        bindSlider({ id: "sibling-repel", key: "siblingRepel" });
+      }
+
+      const growBtn = document.getElementById("test-tree-btn");
+      growBtn.addEventListener("pointerdown", (event) => { event.preventDefault(); startGrow(); });
+      growBtn.addEventListener("pointerup", stopGrow);
+      growBtn.addEventListener("pointerleave", stopGrow);
+      growBtn.addEventListener("pointercancel", stopGrow);
+      window.addEventListener("pointerup", stopGrow);
+      window.addEventListener("resize", () => {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        svg.attr("width", width).attr("height", height);
+      });
+
+      initRoots();
+      setupControls();
+      bindSelections();
+      render();
+    </script>
+  </body>
+</html>
