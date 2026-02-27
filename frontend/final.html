@@ -9,7 +9,7 @@
       html, body { margin: 0; width: 100%; height: 100%; background: var(--paper); color: var(--ink); }
       body { overflow: hidden; font-family: "Latin Modern Roman", "CMU Serif", "Times New Roman", serif; }
       #notes-display { width: 100dvw; height: 100dvh; }
-      #notes-display svg { width: 100%; height: 100%; touch-action: none; cursor: grab; }
+      #notes-display svg { width: 100%; height: 100%; touch-action: none; cursor: default; }
       #notes-display svg.is-dragging { cursor: grabbing; }
       .ui-panel { position: fixed; z-index: 3; background: rgb(255 255 255 / 92%); border: 1px solid #000; padding: 10px 12px; backdrop-filter: blur(2px); border-radius: 4px;}
       #test-tree-btn { top: 12px; left: 12px; font-family: inherit; font-size: 16px; cursor: pointer; transition: background 0.2s;}
@@ -20,7 +20,7 @@
       .slider-row { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: center; margin-bottom: 8px; }
       .slider-row label { font-size: 13px; }
       .slider-row input[type="range"] { grid-column: 1 / span 2; width: 100%; cursor: pointer;}
-      .slider-value { font-size: 12px; min-width: 24px; text-align: right; }
+      .slider-value { font-size: 12px; min-width: 40px; text-align: right; }
       .chord, .tree-chord, .final-chord { text-anchor: middle; dominant-baseline: middle; letter-spacing: 0.04em; fill: var(--ink); }
       .chord { font-size: clamp(28px, 4vw, 54px); }
       .tree-chord, .final-chord { font-size: clamp(22px, 3vw, 36px); }
@@ -34,15 +34,15 @@
     <button id="test-tree-btn" class="ui-panel" type="button">Test call (hold)</button>
     
     <aside id="controls" class="ui-panel" aria-label="Layout controls">
-      <h2>Layout Controls</h2>
+      <h2>Tuning</h2>
       <div class="toggle-row"><input id="toggle-boxes" type="checkbox" checked /><label for="toggle-boxes">Show bounding boxes</label></div>
       <div class="slider-row"><label for="max-depth">Max depth</label><span id="max-depth-value" class="slider-value">6</span><input id="max-depth" type="range" min="1" max="10" step="1" /></div>
-      <div class="slider-row"><label for="layer-gap">Layer gap</label><span id="layer-gap-value" class="slider-value">110</span><input id="layer-gap" type="range" min="50" max="220" step="1" /></div>
-      <div class="slider-row"><label for="subtree-pad-x">Box pad X</label><span id="subtree-pad-x-value" class="slider-value">10</span><input id="subtree-pad-x" type="range" min="0" max="60" step="1" /></div>
-      <div class="slider-row"><label for="subtree-pad-y">Box pad Y</label><span id="subtree-pad-y-value" class="slider-value">10</span><input id="subtree-pad-y" type="range" min="0" max="60" step="1" /></div>
-      <div class="slider-row"><label for="label-pad-x">Label pad X</label><span id="label-pad-x-value" class="slider-value">12</span><input id="label-pad-x" type="range" min="0" max="42" step="1" /></div>
-      <div class="slider-row"><label for="label-pad-y">Label pad Y</label><span id="label-pad-y-value" class="slider-value">8</span><input id="label-pad-y" type="range" min="0" max="42" step="1" /></div>
-      <div class="slider-row"><label for="collision-padding">Subtree Gap (Collision)</label><span id="collision-padding-value" class="slider-value">12</span><input id="collision-padding" type="range" min="0" max="70" step="1" /></div>
+      <div class="slider-row"><label for="layer-gap">Layer gap</label><span id="layer-gap-value" class="slider-value">110px</span><input id="layer-gap" type="range" min="50" max="240" step="1" /></div>
+      <div class="slider-row"><label for="collision-padding">Sibling gap</label><span id="collision-padding-value" class="slider-value">12px</span><input id="collision-padding" type="range" min="0" max="90" step="1" /></div>
+      <div class="slider-row"><label for="subtree-pad-x">Box pad X</label><span id="subtree-pad-x-value" class="slider-value">10px</span><input id="subtree-pad-x" type="range" min="0" max="70" step="1" /></div>
+      <div class="slider-row"><label for="subtree-pad-y">Box pad Y</label><span id="subtree-pad-y-value" class="slider-value">10px</span><input id="subtree-pad-y" type="range" min="0" max="70" step="1" /></div>
+      <div class="slider-row"><label for="label-pad-x">Text pad X</label><span id="label-pad-x-value" class="slider-value">12px</span><input id="label-pad-x" type="range" min="0" max="60" step="1" /></div>
+      <div class="slider-row"><label for="label-pad-y">Text pad Y</label><span id="label-pad-y-value" class="slider-value">8px</span><input id="label-pad-y" type="range" min="0" max="60" step="1" /></div>
     </aside>
     <div id="notes-display"></div>
 
@@ -77,12 +77,14 @@
       let nextId = 0;
       let showBoxes = true;
       let finalRowY = height / 2 + CFG.layerGap * 2;
+      const GROW_INTERVAL_MS = 140;
 
       const nodes = [];
       const edges = [];
       const layers = [];
       const byId = new Map();
       let finals = [];
+      let projectedLeafIds = new Set();
 
       const measureCanvas = document.createElement("canvas");
       const measureCtx = measureCanvas.getContext("2d");
@@ -97,12 +99,26 @@
       const nodeLayer = viewport.append("g");
       const finalLayer = viewport.append("g");
 
-      svg.call(
-        d3.zoom().scaleExtent([0.15, 4.2])
-          .on("start", () => svg.classed("is-dragging", true))
-          .on("zoom", (event) => viewport.attr("transform", event.transform))
-          .on("end", () => svg.classed("is-dragging", false))
-      ).on("dblclick.zoom", null);
+      const zoomBehavior = d3.zoom()
+        .scaleExtent([0.15, 4.2])
+        .filter((event) => {
+          if (event.type === "wheel") return true;
+          if (event.type === "dblclick") return false;
+          if (event.type === "mousedown") return event.button === 0;
+          return true;
+        })
+        .on("start", (event) => {
+          if (event.sourceEvent && event.sourceEvent.type === "mousedown") {
+            svg.classed("is-dragging", true);
+          }
+        })
+        .on("zoom", (event) => viewport.attr("transform", event.transform))
+        .on("end", () => svg.classed("is-dragging", false));
+
+      svg.call(zoomBehavior).on("dblclick.zoom", null);
+      svg.on("mousedown.cursor", (event) => {
+        if (event.button === 0) svg.classed("is-dragging", true);
+      });
 
       const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
       const fontPx = (kind) => (kind === "root" ? clamp(width * 0.04, 28, 54) : clamp(width * 0.03, 22, 36));
@@ -140,9 +156,9 @@
           const leftIndex = pIndex * 2;
           const rightIndex = pIndex * 2 + 1;
           
-          // Spawn exact center of parent so it blooms outwards smoothly
-          const left = makeNode({ label: ROMAN_POOL[(leftIndex + depth) % ROMAN_POOL.length], kind: "tree", layer: depth, index: leftIndex, parentId: parent.id, x: parent.x, y: parent.y });
-          const right = makeNode({ label: ROMAN_POOL[(rightIndex + depth + 1) % ROMAN_POOL.length], kind: "tree", layer: depth, index: rightIndex, parentId: parent.id, x: parent.x, y: parent.y });
+          const spawnY = parent.y + 26;
+          const left = makeNode({ label: ROMAN_POOL[(leftIndex + depth) % ROMAN_POOL.length], kind: "tree", layer: depth, index: leftIndex, parentId: parent.id, x: parent.x, y: spawnY });
+          const right = makeNode({ label: ROMAN_POOL[(rightIndex + depth + 1) % ROMAN_POOL.length], kind: "tree", layer: depth, index: rightIndex, parentId: parent.id, x: parent.x, y: spawnY });
           
           edges.push({ id: `e-${parent.id}-${left.id}`, sourceId: parent.id, targetId: left.id });
           edges.push({ id: `e-${parent.id}-${right.id}`, sourceId: parent.id, targetId: right.id });
@@ -153,11 +169,44 @@
         updateLayout();
       }
 
+      function pruneToDepth(maxDepth) {
+        const allowed = new Set(nodes.filter((n) => n.layer <= maxDepth).map((n) => n.id));
+
+        for (let i = nodes.length - 1; i >= 0; i -= 1) {
+          if (!allowed.has(nodes[i].id)) nodes.splice(i, 1);
+        }
+
+        byId.clear();
+        nodes.forEach((n) => byId.set(n.id, n));
+        nodes.forEach((n) => {
+          n.children = n.children.filter((cid) => allowed.has(cid));
+          if (n.parentId && !allowed.has(n.parentId)) n.parentId = null;
+        });
+
+        for (let i = edges.length - 1; i >= 0; i -= 1) {
+          const e = edges[i];
+          if (!allowed.has(e.sourceId) || !allowed.has(e.targetId)) edges.splice(i, 1);
+        }
+
+        for (let i = layers.length - 1; i >= 0; i -= 1) {
+          if (i + 1 > maxDepth) {
+            layers.splice(i, 1);
+            continue;
+          }
+          layers[i] = layers[i].filter((id) => allowed.has(id));
+          if (layers[i].length === 0) layers.splice(i, 1);
+        }
+      }
+
       function updateLayout() {
         // 1. Setup Layer Depths
-        finals = nodes.filter(n => n.children.length === 0).map(n => ({ id: `f-${n.id}`, sourceId: n.id, label: n.label }));
-        const deepest = nodes.reduce((mx, n) => Math.max(mx, n.layer), 0);
-        finalRowY = height / 2 + (deepest + 2) * CFG.layerGap;
+        const leaves = nodes.filter((n) => n.children.length === 0);
+        const deepestLeafLayer = leaves.reduce((mx, n) => Math.max(mx, n.layer), 0);
+        finalRowY = height / 2 + deepestLeafLayer * CFG.layerGap;
+        projectedLeafIds = new Set(leaves.filter((n) => n.layer < deepestLeafLayer).map((n) => n.id));
+        finals = leaves
+          .filter((n) => projectedLeafIds.has(n.id))
+          .map((n) => ({ id: `f-${n.id}`, sourceId: n.id, label: n.label }));
 
         const y0 = height / 2;
         nodes.forEach(n => n.y = y0 + n.layer * CFG.layerGap);
@@ -170,8 +219,12 @@
           n.bh = box.height + CFG.subtreePadY * 2;
 
           if (n.children.length === 0) {
-            const finalW = labelBox(n.label, clamp(width * 0.03, 22, 34)).width;
-            n.sw = Math.max(n.bw, finalW + CFG.subtreePadX * 2);
+            if (projectedLeafIds.has(n.id)) {
+              const finalW = labelBox(n.label, clamp(width * 0.03, 22, 34)).width;
+              n.sw = Math.max(n.bw, finalW + CFG.subtreePadX * 2);
+            } else {
+              n.sw = n.bw;
+            }
           } else {
             let childrenWidth = 0;
             n.children.forEach(cid => {
@@ -220,10 +273,12 @@
           let bottom = n.y + n.bh / 2;
 
           if (n.children.length === 0) {
-            const finalBox = labelBox(n.label, clamp(width * 0.03, 22, 34));
-            left = Math.min(left, n.x - finalBox.width / 2 - CFG.subtreePadX);
-            right = Math.max(right, n.x + finalBox.width / 2 + CFG.subtreePadX);
-            bottom = Math.max(bottom, finalRowY + finalBox.height / 2 + CFG.subtreePadY);
+            if (projectedLeafIds.has(n.id)) {
+              const finalBox = labelBox(n.label, clamp(width * 0.03, 22, 34));
+              left = Math.min(left, n.x - finalBox.width / 2 - CFG.subtreePadX);
+              right = Math.max(right, n.x + finalBox.width / 2 + CFG.subtreePadX);
+              bottom = Math.max(bottom, finalRowY + finalBox.height / 2 + CFG.subtreePadY);
+            }
           } else {
             n.children.forEach(cid => {
               const cb = calcBounds(byId.get(cid));
@@ -245,53 +300,43 @@
       }
 
       function renderD3() {
-        const t = svg.transition().duration(400);
-
         // Nodes
-        const nodeSel = nodeLayer.selectAll("text.node").data(nodes, d => d.id)
-          .join("text")
+        nodeLayer.selectAll("text.node").data(nodes, d => d.id).join("text")
           .attr("class", d => d.kind === "root" ? "chord node" : "tree-chord node")
-          .text(d => d.label);
-        
-        nodeSel.transition(t).attr("x", d => d.x).attr("y", d => d.y);
+          .text(d => d.label)
+          .attr("x", d => d.x)
+          .attr("y", d => d.y);
 
         // Edges
-        const edgeSel = edgeLayer.selectAll("line.branch").data(edges, d => d.id)
-          .join("line").attr("class", "branch");
-        
-        edgeSel.transition(t)
+        edgeLayer.selectAll("line.branch").data(edges, d => d.id).join("line")
+          .attr("class", "branch")
           .attr("x1", d => byId.get(d.sourceId).x)
           .attr("y1", d => byId.get(d.sourceId).y + 12)
           .attr("x2", d => byId.get(d.targetId).x)
           .attr("y2", d => byId.get(d.targetId).y - 18);
 
         // Boxes
-        const boxSel = boxLayer.selectAll("rect.subtree-box").data(nodes, d => d.id)
-          .join("rect").attr("class", "subtree-box");
-        
-        boxSel.transition(t)
+        boxLayer.selectAll("rect.subtree-box").data(nodes, d => d.id).join("rect")
+          .attr("class", "subtree-box")
+          .attr("stroke", d => BOX_COLORS[d.layer % BOX_COLORS.length].stroke)
+          .attr("fill", d => BOX_COLORS[d.layer % BOX_COLORS.length].fill)
           .attr("x", d => d.bounds.left)
           .attr("y", d => d.bounds.top)
           .attr("width", d => d.bounds.width)
           .attr("height", d => d.bounds.height)
-          .attr("stroke", d => BOX_COLORS[d.layer % BOX_COLORS.length].stroke)
-          .attr("fill", d => BOX_COLORS[d.layer % BOX_COLORS.length].fill)
           .attr("opacity", showBoxes ? 1 : 0);
 
         // Finals
-        const finalDropSel = finalLayer.selectAll("line.final-drop").data(finals, d => d.id)
-          .join("line").attr("class", "final-drop");
-        
-        finalDropSel.transition(t)
+        finalLayer.selectAll("line.final-drop").data(finals, d => d.id).join("line")
+          .attr("class", "final-drop")
           .attr("x1", d => byId.get(d.sourceId).x)
           .attr("y1", d => byId.get(d.sourceId).y + 16)
           .attr("x2", d => byId.get(d.sourceId).x)
           .attr("y2", finalRowY - 20);
 
-        const finalChordSel = finalLayer.selectAll("text.final-chord").data(finals, d => d.id)
-          .join("text").attr("class", "final-chord").text(d => d.label);
-          
-        finalChordSel.transition(t)
+        finalLayer.selectAll("text.final-chord").data(finals, d => d.id).join("text")
+          .attr("class", "final-chord")
+          .text(d => d.label)
           .attr("x", d => byId.get(d.sourceId).x)
           .attr("y", finalRowY);
       }
@@ -301,16 +346,21 @@
         if (holdTimer !== null) { clearInterval(holdTimer); holdTimer = null; }
       }
 
-      function startGrow() {
-        if (holdTimer !== null) return;
-        addGeneration();
+      function scheduleGrowTimer() {
+        if (layers.length >= CFG.maxDepth) return;
         holdTimer = setInterval(() => {
           addGeneration();
           if (layers.length >= CFG.maxDepth) stopGrow();
-        }, 400); // Matched interval to transition duration
+        }, GROW_INTERVAL_MS);
       }
 
-      function bindSlider({ id, key, format = (v) => String(v), parse = (v) => Number(v) }) {
+      function startGrow() {
+        if (holdTimer !== null) return;
+        addGeneration();
+        scheduleGrowTimer();
+      }
+
+      function bindSlider({ id, key, format = (v) => String(v), parse = (v) => Number(v), onInput = null }) {
         const slider = document.getElementById(id);
         const valueEl = document.getElementById(`${id}-value`);
         slider.value = CFG[key];
@@ -318,6 +368,7 @@
         slider.addEventListener("input", () => {
           CFG[key] = parse(slider.value);
           valueEl.textContent = format(CFG[key]);
+          if (onInput) onInput();
           updateLayout();
         });
       }
@@ -330,20 +381,31 @@
           updateLayout(); 
         });
 
-        bindSlider({ id: "max-depth", key: "maxDepth" });
-        bindSlider({ id: "layer-gap", key: "layerGap" });
-        bindSlider({ id: "subtree-pad-x", key: "subtreePadX" });
-        bindSlider({ id: "subtree-pad-y", key: "subtreePadY" });
-        bindSlider({ id: "label-pad-x", key: "labelPadX" });
-        bindSlider({ id: "label-pad-y", key: "labelPadY" });
-        bindSlider({ id: "collision-padding", key: "collisionPadding" });
+        bindSlider({
+          id: "max-depth",
+          key: "maxDepth",
+          onInput: () => {
+            pruneToDepth(CFG.maxDepth);
+            if (layers.length >= CFG.maxDepth) stopGrow();
+          }
+        });
+        bindSlider({ id: "layer-gap", key: "layerGap", format: (v) => `${v}px` });
+        bindSlider({ id: "collision-padding", key: "collisionPadding", format: (v) => `${v}px` });
+        bindSlider({ id: "subtree-pad-x", key: "subtreePadX", format: (v) => `${v}px` });
+        bindSlider({ id: "subtree-pad-y", key: "subtreePadY", format: (v) => `${v}px` });
+        bindSlider({ id: "label-pad-x", key: "labelPadX", format: (v) => `${v}px` });
+        bindSlider({ id: "label-pad-y", key: "labelPadY", format: (v) => `${v}px` });
       }
 
       const growBtn = document.getElementById("test-tree-btn");
       growBtn.addEventListener("pointerdown", (event) => { event.preventDefault(); startGrow(); });
       growBtn.addEventListener("pointerup", stopGrow);
       growBtn.addEventListener("pointerleave", stopGrow);
-      window.addEventListener("pointerup", stopGrow);
+      window.addEventListener("pointerup", () => {
+        stopGrow();
+        svg.classed("is-dragging", false);
+      });
+      window.addEventListener("blur", () => svg.classed("is-dragging", false));
       window.addEventListener("resize", () => {
         width = window.innerWidth;
         height = window.innerHeight;
