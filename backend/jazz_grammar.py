@@ -15,7 +15,7 @@ from fractions import Fraction
 import json
 import math
 import re
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 ROMAN_TO_DEGREE = {
     "I": 0,
@@ -28,8 +28,35 @@ ROMAN_TO_DEGREE = {
 }
 DEGREE_TO_ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII"]
 MAJOR_SCALE_SEMITONES = [0, 2, 4, 5, 7, 9, 11]
+SEMITONE_TO_SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+SEMITONE_TO_FLAT = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+NOTE_NAME_TO_SEMITONE = {
+    "C": 0,
+    "B#": 0,
+    "C#": 1,
+    "Db": 1,
+    "D": 2,
+    "D#": 3,
+    "Eb": 3,
+    "E": 4,
+    "Fb": 4,
+    "E#": 5,
+    "F": 5,
+    "F#": 6,
+    "Gb": 6,
+    "G": 7,
+    "G#": 8,
+    "Ab": 8,
+    "A": 9,
+    "A#": 10,
+    "Bb": 10,
+    "B": 11,
+    "Cb": 11,
+}
+FLAT_KEY_NAMES = {"F", "Bb", "Eb", "Ab", "Db", "Gb", "Cb", "Fb"}
 ROOT_RE = re.compile(r"^([b#♭♯]*)(VII|VI|IV|V|III|II|I)$")
 LOWER_MINOR_CHORD_RE = re.compile(r"^([b#♭♯]*)(vii|vi|iv|v|iii|ii|i)(7?)$")
+NOTE_NAME_RE = re.compile(r"^([A-Ga-g])([#b♭♯]?)$")
 GRID_BAR_RE = re.compile(r"\|([^|]*)\|")
 DEFAULT_SEARCH_DEPTH = 1
 DEFAULT_BEATS_PER_BAR = 4
@@ -294,6 +321,7 @@ def timed_progression_to_grid_notation(
     beats_per_bar: int = DEFAULT_BEATS_PER_BAR,
     max_subdivisions: int = MAX_GRID_SUBDIVISIONS,
     pad_with_last_chord: bool = True,
+    chord_labeler: Callable[[Chord], str] | None = None,
 ) -> str:
     timed = [coerce_timed_chord(item) for item in progression]
     if not timed:
@@ -316,7 +344,8 @@ def timed_progression_to_grid_notation(
                 f"Duration {format_duration(item.duration)} cannot align with subdivision "
                 f"{required_subdivisions}."
             )
-        slots.extend([item.chord.to_token()] * slot_count.numerator)
+        chord_label = chord_labeler(item.chord) if chord_labeler else item.chord.to_token()
+        slots.extend([chord_label] * slot_count.numerator)
 
     if not slots:
         return ""
@@ -367,6 +396,64 @@ def timed_chord_tokens(chords: Sequence[TimedChord]) -> tuple[str, ...]:
 
 def semitone_for_root(root: Root) -> int:
     return (MAJOR_SCALE_SEMITONES[root.degree] + root.accidental) % 12
+
+
+def _normalize_note_name(value: str) -> str:
+    text = value.strip().replace("♭", "b").replace("♯", "#")
+    match = NOTE_NAME_RE.fullmatch(text)
+    if not match:
+        raise ValueError(f"Unsupported key name: '{value}'")
+    letter, accidental = match.groups()
+    return f"{letter.upper()}{accidental}"
+
+
+def key_tonic_semitone(key: str) -> int:
+    normalized = _normalize_note_name(key)
+    semitone = NOTE_NAME_TO_SEMITONE.get(normalized)
+    if semitone is None:
+        raise ValueError(f"Unsupported key name: '{key}'")
+    return semitone
+
+
+def key_prefers_flats(key: str) -> bool:
+    return _normalize_note_name(key) in FLAT_KEY_NAMES
+
+
+def semitone_to_note_name(semitone: int, *, prefer_flats: bool = False) -> str:
+    names = SEMITONE_TO_FLAT if prefer_flats else SEMITONE_TO_SHARP
+    return names[semitone % 12]
+
+
+def realize_chord(chord: Chord, key: str) -> str:
+    tonic = key_tonic_semitone(key)
+    chord_root = (tonic + semitone_for_root(chord.root)) % 12
+    root_name = semitone_to_note_name(chord_root, prefer_flats=key_prefers_flats(key))
+    if chord.diminished7:
+        return f"{root_name}°7"
+    if chord.dominant7:
+        return f"{root_name}m7" if chord.minor else f"{root_name}7"
+    if chord.minor:
+        return f"{root_name}m"
+    return root_name
+
+
+def realize_timed_chord(timed: TimedChord, key: str, *, show_unit_one: bool = False) -> str:
+    chord_text = realize_chord(timed.chord, key)
+    if timed.duration == 1 and not show_unit_one:
+        return chord_text
+    return f"{chord_text}@{format_duration(timed.duration)}"
+
+
+def realize_progression(
+    progression: Sequence[str | TimedChord],
+    key: str,
+    *,
+    show_unit_one: bool = False,
+) -> list[str]:
+    return [
+        realize_timed_chord(coerce_timed_chord(item), key, show_unit_one=show_unit_one)
+        for item in progression
+    ]
 
 
 def normalize_accidental(delta: int) -> int:
