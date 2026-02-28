@@ -252,13 +252,17 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
 
     visibleLayers.forEach((layerData, layerIndex) => {
       const kind = layerIndex === 0 ? "root" : "tree";
-      const sourceTokens = layerData.progressionBeats && layerData.progressionBeats.length > 0
+      const labelTokens = layerData.progressionDisplay && layerData.progressionDisplay.length > 0
+        ? layerData.progressionDisplay
+        : layerData.progressionBeats;
+      const durationTokens = layerData.progressionBeats && layerData.progressionBeats.length > 0
         ? layerData.progressionBeats
         : layerData.progressionDisplay;
       let cursor = 0;
-      sourceTokens.forEach((token, tokenIndex) => {
+      durationTokens.forEach((token, tokenIndex) => {
+        const labelToken = labelTokens[tokenIndex] || token;
         const node = makeNode({
-          label: chordLabel(token),
+          label: chordLabel(labelToken),
           kind,
           layer: layerIndex,
           index: tokenIndex
@@ -268,7 +272,7 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
         cursor += node.durationBeats;
       });
 
-      const layerMarkers = extractGridMarkers(layerData.progressionGrid);
+      const layerMarkers = extractGridMarkers(layerData.progressionGridDisplay || layerData.progressionGrid);
       layerMarkers.forEach((marker) => {
         timeMarkers.push({
           id: `m-${layerIndex}-${marker.id}`,
@@ -441,6 +445,7 @@ export default function App() {
       progressionBeats: initialDisplay,
       progressionDisplay: initialDisplay,
       progressionGrid: "",
+      progressionGridDisplay: "",
       applied: null
     }
   ]);
@@ -522,7 +527,8 @@ export default function App() {
         refreshedLayers.push({
           ...layer,
           progressionDisplay: parseResponse.progression.display,
-          progressionGrid: parseResponse.progression.grid
+          progressionGrid: parseResponse.progression.grid,
+          progressionGridDisplay: parseResponse.progression.gridDisplay || parseResponse.progression.grid
         });
       }
       setLayers(refreshedLayers);
@@ -566,6 +572,7 @@ export default function App() {
         progressionBeats: parseResponse.progression.beats,
         progressionDisplay: parseResponse.progression.display,
         progressionGrid: parseResponse.progression.grid,
+        progressionGridDisplay: parseResponse.progression.gridDisplay || parseResponse.progression.grid,
         applied: null
       };
       setLayers([root]);
@@ -605,6 +612,7 @@ export default function App() {
         progressionBeats: suggestion.result.beats,
         progressionDisplay: suggestion.result.display,
         progressionGrid: suggestion.result.grid,
+        progressionGridDisplay: suggestion.result.gridDisplay || suggestion.result.grid,
         applied: {
           rule: suggestion.rule,
           span: suggestion.span,
@@ -850,7 +858,7 @@ export default function App() {
 
         <aside id="grid-output" className="ui-panel" aria-label="Generated chord grid output">
           <h2>Generated Chord Grid</h2>
-          <pre>{currentLayer?.progressionGrid || "Run Start to render grid notation."}</pre>
+          <pre>{currentLayer?.progressionGridDisplay || "Run Start to render grid notation."}</pre>
         </aside>
       </main>
     </div>

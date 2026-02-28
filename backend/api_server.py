@@ -17,6 +17,7 @@ try:
         key_tonic_semitone,
         parse_progression_text,
         parse_timed_chord_token,
+        realize_chord,
         realize_timed_chord,
         timed_progression_to_grid_notation,
     )
@@ -28,6 +29,7 @@ except ModuleNotFoundError:
         key_tonic_semitone,
         parse_progression_text,
         parse_timed_chord_token,
+        realize_chord,
         realize_timed_chord,
         timed_progression_to_grid_notation,
     )
@@ -166,6 +168,16 @@ def _grid_for_tokens(tokens_in_beats: Sequence[str]) -> str:
     return timed_progression_to_grid_notation(timed)
 
 
+def _grid_for_display(tokens_in_beats: Sequence[str], display_mode: str, display_key: str) -> str:
+    timed = [parse_timed_chord_token(token) for token in tokens_in_beats]
+    if display_mode == "roman":
+        return timed_progression_to_grid_notation(timed)
+    return timed_progression_to_grid_notation(
+        timed,
+        chord_labeler=lambda chord: realize_chord(chord, display_key),
+    )
+
+
 def _json_response(handler: BaseHTTPRequestHandler, status_code: int, payload: dict[str, Any]) -> None:
     body = json.dumps(payload).encode("utf-8")
     handler.send_response(status_code)
@@ -247,6 +259,7 @@ class JazzGrammarAPIHandler(BaseHTTPRequestHandler):
                     "beats": progression_beats,
                     "display": progression_display,
                     "grid": _grid_for_tokens(progression_beats),
+                    "gridDisplay": _grid_for_display(progression_beats, display_mode, display_key),
                 },
                 "meta": {
                     "notationMode": notation_mode,
@@ -304,6 +317,7 @@ class JazzGrammarAPIHandler(BaseHTTPRequestHandler):
                             display_key,
                         ),
                         "grid": _grid_for_tokens(before_beats),
+                        "gridDisplay": _grid_for_display(before_beats, display_mode, display_key),
                     },
                     "replacement": {
                         "beats": replacement_beats,
@@ -315,6 +329,11 @@ class JazzGrammarAPIHandler(BaseHTTPRequestHandler):
                             display_key,
                         ),
                         "grid": _grid_for_tokens(replacement_beats),
+                        "gridDisplay": _grid_for_display(
+                            replacement_beats,
+                            display_mode,
+                            display_key,
+                        ),
                     },
                     "result": {
                         "beats": result_beats,
@@ -326,6 +345,7 @@ class JazzGrammarAPIHandler(BaseHTTPRequestHandler):
                             display_key,
                         ),
                         "grid": _grid_for_tokens(result_beats),
+                        "gridDisplay": _grid_for_display(result_beats, display_mode, display_key),
                     },
                     "summary": f"Rule {app.rule} on slots {app.start + 1}-{app.end}",
                 }
@@ -339,6 +359,7 @@ class JazzGrammarAPIHandler(BaseHTTPRequestHandler):
                     "beats": progression_beats,
                     "display": base_display,
                     "grid": _grid_for_tokens(progression_beats),
+                    "gridDisplay": _grid_for_display(progression_beats, display_mode, display_key),
                 },
                 "suggestions": suggestions,
                 "meta": {

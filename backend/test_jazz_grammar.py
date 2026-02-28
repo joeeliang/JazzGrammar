@@ -7,6 +7,7 @@ from jazz_grammar import (
     parse_chord_grid_notation,
     parse_progression_text,
     parse_timed_chord_token,
+    realize_chord,
     realize_progression,
     timed_progression_to_grid_notation,
 )
@@ -68,6 +69,13 @@ class JazzGrammarTests(unittest.TestCase):
     def test_render_timed_chords_to_grid_notation(self) -> None:
         rendered = timed_progression_to_grid_notation(["I@3/2", "IIm@1/2"])
         self.assertEqual(rendered, "| I / I,IIm / IIm / IIm |")
+
+    def test_render_timed_chords_to_grid_notation_with_realized_labels(self) -> None:
+        rendered = timed_progression_to_grid_notation(
+            ["I@1", "IV@1", "V7@2"],
+            chord_labeler=lambda chord: realize_chord(chord, "C"),
+        )
+        self.assertEqual(rendered, "| C / F / G7 / G7 |")
 
     def test_parse_progression_text_auto_detects_grid(self) -> None:
         progression, mode = parse_progression_text("| I / I,ii / ii / ii |")
