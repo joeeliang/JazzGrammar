@@ -45,44 +45,6 @@ function durationInBeats(token) {
   return Number.isFinite(value) && value > 0 ? value : 1;
 }
 
-function extractGridMarkers(gridText) {
-  if (!gridText || typeof gridText !== "string") return [];
-  const markers = [];
-  const lines = gridText.split("\n").map((line) => line.trim()).filter(Boolean);
-  let beatOffset = 0;
-
-  lines.forEach((line) => {
-    const match = line.match(/^\|\s*(.*?)\s*\|$/);
-    if (!match) return;
-    const beats = match[1].split("/").map((beat) => beat.trim());
-    markers.push({ beat: beatOffset, symbol: "|" });
-    beats.forEach((beatText, beatIndex) => {
-      if (beatIndex > 0) {
-        markers.push({ beat: beatOffset + beatIndex, symbol: "/" });
-      }
-      const parts = beatText.split(",").map((part) => part.trim()).filter(Boolean);
-      const count = Math.max(1, parts.length);
-      for (let subIndex = 1; subIndex < count; subIndex += 1) {
-        markers.push({
-          beat: beatOffset + beatIndex + (subIndex / count),
-          symbol: ","
-        });
-      }
-    });
-    beatOffset += 4;
-    markers.push({ beat: beatOffset, symbol: "|" });
-  });
-
-  const unique = new Map();
-  markers.forEach((marker, index) => {
-    const key = `${marker.symbol}@${marker.beat.toFixed(4)}`;
-    if (!unique.has(key)) {
-      unique.set(key, { ...marker, id: `${key}-${index}` });
-    }
-  });
-  return Array.from(unique.values());
-}
-
 async function postJSON(path, payload) {
   const response = await fetch(path, {
     method: "POST",
@@ -219,7 +181,6 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
     const nodes = [];
     const edges = [];
     const brackets = [];
-    const timeMarkers = [];
     const byId = new Map();
     const byLayer = new Map();
 
@@ -265,16 +226,6 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
         node.durationBeats = durationInBeats(token);
         node.startBeat = cursor;
         cursor += node.durationBeats;
-      });
-
-      const layerMarkers = extractGridMarkers(layerData.progressionGrid);
-      layerMarkers.forEach((marker) => {
-        timeMarkers.push({
-          id: `m-${layerIndex}-${marker.id}`,
-          layer: layerIndex,
-          beat: marker.beat,
-          symbol: marker.symbol
-        });
       });
     });
 
@@ -327,8 +278,7 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
       const rightPad = clamp(width * 0.06, 45, 90);
 
       const nodeEndBeats = nodes.map((node) => node.startBeat + node.durationBeats);
-      const markerBeats = timeMarkers.map((marker) => marker.beat);
-      const maxBeat = Math.max(1, ...nodeEndBeats, ...markerBeats);
+      const maxBeat = Math.max(1, ...nodeEndBeats);
       const pxPerBeat = (width - leftPad - rightPad) / maxBeat;
 
       nodes.forEach((node) => {
@@ -347,11 +297,6 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
           width: node.bw,
           height: node.bh
         };
-      });
-
-      timeMarkers.forEach((marker) => {
-        marker.x = leftPad + marker.beat * pxPerBeat;
-        marker.y = y0 + marker.layer * cfg.layerGap - 34;
       });
     }
 
@@ -408,11 +353,6 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
         .attr("x", (d) => (d.left + d.right) / 2)
         .attr("y", (d) => d.y + 24);
 
-      annotationLayer.selectAll("text.temporal-marker").data(timeMarkers, (d) => d.id).join("text")
-        .attr("class", "substitution-label temporal-marker")
-        .text((d) => d.symbol)
-        .attr("x", (d) => d.x)
-        .attr("y", (d) => d.y);
     }
 
     updateLayout();
