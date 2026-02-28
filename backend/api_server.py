@@ -14,16 +14,18 @@ try:
         TimedChord,
         find_next_steps,
         format_duration,
-        parse_progression_arg,
+        parse_progression_text,
         parse_timed_chord_token,
+        timed_progression_to_grid_notation,
     )
 except ModuleNotFoundError:
     from backend.jazz_grammar import (  # type: ignore[no-redef]
         TimedChord,
         find_next_steps,
         format_duration,
-        parse_progression_arg,
+        parse_progression_text,
         parse_timed_chord_token,
+        timed_progression_to_grid_notation,
     )
 
 
@@ -54,6 +56,13 @@ def _beats_per_bar(payload: dict[str, Any]) -> Fraction:
     return _coerce_positive_fraction(raw, "beatsPerBar")
 
 
+def _notation_mode(payload: dict[str, Any]) -> str:
+    mode = str(payload.get("notationMode", "auto")).strip().lower()
+    if mode not in {"auto", "duration", "grid"}:
+        raise ValueError('notationMode must be "auto", "duration", or "grid".')
+    return mode
+
+
 def _parse_progression_text(payload: dict[str, Any]) -> str:
     progression = payload.get("progression", "")
     if not isinstance(progression, str) or not progression.strip():
@@ -65,7 +74,10 @@ def _convert_to_grammar_units(
     progression: Sequence[TimedChord],
     duration_unit: str,
     beats_per_bar: Fraction,
+    notation_mode: str,
 ) -> list[TimedChord]:
+    if notation_mode == "grid":
+        return list(progression)
     if duration_unit == "beats":
         return list(progression)
     return [
@@ -97,13 +109,24 @@ def _timed_tokens_for_unit(
     return [_format_token(item) for item in display_timed]
 
 
-def _parse_request(payload: dict[str, Any]) -> tuple[list[TimedChord], str, Fraction]:
+def _parse_request(payload: dict[str, Any]) -> tuple[list[TimedChord], str, Fraction, str]:
     progression_text = _parse_progression_text(payload)
     duration_unit = _duration_unit(payload)
     beats_per_bar = _beats_per_bar(payload)
-    raw_progression = parse_progression_arg(progression_text)
-    progression_in_beats = _convert_to_grammar_units(raw_progression, duration_unit, beats_per_bar)
-    return progression_in_beats, duration_unit, beats_per_bar
+    requested_notation = _notation_mode(payload)
+    raw_progression, parsed_notation = parse_progression_text(progression_text, requested_notation)
+    progression_in_beats = _convert_to_grammar_units(
+        raw_progression,
+        duration_unit,
+        beats_per_bar,
+        parsed_notation,
+    )
+    return progression_in_beats, duration_unit, beats_per_bar, parsed_notation
+
+
+def _grid_for_tokens(tokens_in_beats: Sequence[str]) -> str:
+    timed = [parse_timed_chord_token(token) for token in tokens_in_beats]
+    return timed_progression_to_grid_notation(timed)
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status_code: int, payload: dict[str, Any]) -> None:
@@ -158,15 +181,16 @@ class JazzGrammarAPIHandler(BaseHTTPRequestHandler):
 
     def _handle_parse(self, payload: dict[str, Any]) -> None:
         try:
-            progression_in_beats, duration_unit, beats_per_bar = _parse_request(payload)
+            progression_in_beats, duration_unit, beats_per_bar, notation_mode = _parse_request(payload)
         except Exception as exc:  # noqa: BLE001
             _json_response(self, 400, {"error": str(exc)})
             return
 
         progression_beats = [_format_token(timed) for timed in progression_in_beats]
+        display_unit = duration_unit if notation_mode == "duration" else "beats"
         progression_display = _timed_tokens_for_unit(
             progression_beats,
-            duration_unit,
+            display_unit,
             beats_per_bar,
         )
         _json_response(
@@ -176,8 +200,10 @@ class JazzGrammarAPIHandler(BaseHTTPRequestHandler):
                 "progression": {
                     "beats": progression_beats,
                     "display": progression_display,
+                    "grid": _grid_for_tokens(progression_beats),
                 },
                 "meta": {
+                    "notationMode": notation_mode,
                     "durationUnit": duration_unit,
                     "beatsPerBar": str(beats_per_bar),
                 },
@@ -186,13 +212,14 @@ class JazzGrammarAPIHandler(BaseHTTPRequestHandler):
 
     def _handle_suggest(self, payload: dict[str, Any]) -> None:
         try:
-            progression_in_beats, duration_unit, beats_per_bar = _parse_request(payload)
+            progression_in_beats, duration_unit, beats_per_bar, notation_mode = _parse_request(payload)
         except Exception as exc:  # noqa: BLE001
             _json_response(self, 400, {"error": str(exc)})
             return
 
         progression_beats = [_format_token(timed) for timed in progression_in_beats]
-        base_display = _timed_tokens_for_unit(progression_beats, duration_unit, beats_per_bar)
+        display_unit = duration_unit if notation_mode == "duration" else "beats"
+        base_display = _timed_tokens_for_unit(progression_beats, display_unit, beats_per_bar)
         applications = find_next_steps(progression_in_beats)
 
         suggestions: list[dict[str, Any]] = []
@@ -208,15 +235,18 @@ class JazzGrammarAPIHandler(BaseHTTPRequestHandler):
                     "replacementSpanInResult": [app.start, app.start + len(app.replacement)],
                     "before": {
                         "beats": before_beats,
-                        "display": _timed_tokens_for_unit(before_beats, duration_unit, beats_per_bar),
+                        "display": _timed_tokens_for_unit(before_beats, display_unit, beats_per_bar),
+                        "grid": _grid_for_tokens(before_beats),
                     },
                     "replacement": {
                         "beats": replacement_beats,
-                        "display": _timed_tokens_for_unit(replacement_beats, duration_unit, beats_per_bar),
+                        "display": _timed_tokens_for_unit(replacement_beats, display_unit, beats_per_bar),
+                        "grid": _grid_for_tokens(replacement_beats),
                     },
                     "result": {
                         "beats": result_beats,
-                        "display": _timed_tokens_for_unit(result_beats, duration_unit, beats_per_bar),
+                        "display": _timed_tokens_for_unit(result_beats, display_unit, beats_per_bar),
+                        "grid": _grid_for_tokens(result_beats),
                     },
                     "summary": f"Rule {app.rule} on slots {app.start + 1}-{app.end}",
                 }
@@ -229,9 +259,11 @@ class JazzGrammarAPIHandler(BaseHTTPRequestHandler):
                 "base": {
                     "beats": progression_beats,
                     "display": base_display,
+                    "grid": _grid_for_tokens(progression_beats),
                 },
                 "suggestions": suggestions,
                 "meta": {
+                    "notationMode": notation_mode,
                     "durationUnit": duration_unit,
                     "beatsPerBar": str(beats_per_bar),
                 },

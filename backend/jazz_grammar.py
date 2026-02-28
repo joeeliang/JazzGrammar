@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import argparse
 from fractions import Fraction
 import json
+import math
 import re
 from typing import Any, Iterable, Sequence
 
@@ -28,7 +29,11 @@ ROMAN_TO_DEGREE = {
 DEGREE_TO_ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII"]
 MAJOR_SCALE_SEMITONES = [0, 2, 4, 5, 7, 9, 11]
 ROOT_RE = re.compile(r"^([b#♭♯]*)(VII|VI|IV|V|III|II|I)$")
+LOWER_MINOR_CHORD_RE = re.compile(r"^([b#♭♯]*)(vii|vi|iv|v|iii|ii|i)(7?)$")
+GRID_BAR_RE = re.compile(r"\|([^|]*)\|")
 DEFAULT_SEARCH_DEPTH = 1
+DEFAULT_BEATS_PER_BAR = 4
+MAX_GRID_SUBDIVISIONS = 4
 
 
 @dataclass(frozen=True)
@@ -144,19 +149,20 @@ def parse_root(token: str) -> Root:
 
 
 def parse_chord(token: str) -> Chord:
-    token = token.strip()
-    if not token:
+    normalized = token.strip()
+    if not normalized:
         raise ValueError("Empty chord token.")
+    normalized = _normalize_minor_case_chord_token(normalized)
 
-    if token.endswith("°7"):
-        return Chord(root=parse_root(token[:-2]), diminished7=True)
-    if token.endswith("m7"):
-        return Chord(root=parse_root(token[:-2]), minor=True, dominant7=True)
-    if token.endswith("7"):
-        return Chord(root=parse_root(token[:-1]), dominant7=True)
-    if token.endswith("m"):
-        return Chord(root=parse_root(token[:-1]), minor=True)
-    return Chord(root=parse_root(token))
+    if normalized.endswith("°7"):
+        return Chord(root=parse_root(normalized[:-2]), diminished7=True)
+    if normalized.endswith("m7"):
+        return Chord(root=parse_root(normalized[:-2]), minor=True, dominant7=True)
+    if normalized.endswith("7"):
+        return Chord(root=parse_root(normalized[:-1]), dominant7=True)
+    if normalized.endswith("m"):
+        return Chord(root=parse_root(normalized[:-1]), minor=True)
+    return Chord(root=parse_root(normalized))
 
 
 def parse_timed_chord_token(token: str) -> TimedChord:
@@ -195,6 +201,164 @@ def parse_json_progression_item(item: Any) -> TimedChord:
         duration_value = 1
 
     return TimedChord(chord=parse_chord(chord_value.strip()), duration=parse_duration(duration_value))
+
+
+def _normalize_minor_case_chord_token(token: str) -> str:
+    """Support lowercase Roman shorthand (for example: ii, v7)."""
+    match = LOWER_MINOR_CHORD_RE.fullmatch(token.replace("♭", "b").replace("♯", "#"))
+    if not match:
+        return token
+    accidental, roman, has_seventh = match.groups()
+    suffix = "m7" if has_seventh else "m"
+    return f"{accidental}{roman.upper()}{suffix}"
+
+
+def _lcm(values: Sequence[int]) -> int:
+    current = 1
+    for value in values:
+        current = abs(current * value) // math.gcd(current, value)
+    return current
+
+
+def looks_like_chord_grid_notation(raw: str) -> bool:
+    text = raw.strip()
+    return bool(text and "|" in text and "/" in text and GRID_BAR_RE.search(text))
+
+
+def parse_chord_grid_notation(
+    raw: str,
+    *,
+    beats_per_bar: int = DEFAULT_BEATS_PER_BAR,
+    max_subdivisions: int = MAX_GRID_SUBDIVISIONS,
+) -> list[TimedChord]:
+    text = raw.strip()
+    if not text:
+        raise ValueError("Grid notation is empty.")
+    if beats_per_bar <= 0:
+        raise ValueError("beats_per_bar must be positive.")
+
+    slots: list[tuple[Chord, Fraction]] = []
+    subdivision_counts: list[int] = []
+    last_end = 0
+
+    for bar_index, match in enumerate(GRID_BAR_RE.finditer(text), start=1):
+        if text[last_end:match.start()].strip():
+            raise ValueError("Unexpected text outside bar delimiters '|'.")
+        last_end = match.end()
+        bar_body = match.group(1).strip()
+        beats = [beat.strip() for beat in bar_body.split("/")]
+        if len(beats) != beats_per_bar:
+            raise ValueError(
+                f"Bar {bar_index} must contain exactly {beats_per_bar} beats separated by '/'."
+            )
+
+        for beat_index, beat_text in enumerate(beats, start=1):
+            if not beat_text:
+                raise ValueError(f"Bar {bar_index}, beat {beat_index} cannot be empty.")
+            beat_slots = [part.strip() for part in beat_text.split(",")]
+            if any(not part for part in beat_slots):
+                raise ValueError(f"Bar {bar_index}, beat {beat_index} has an empty subdivision.")
+            subdivision_counts.append(len(beat_slots))
+            slot_duration = Fraction(1, len(beat_slots))
+            for part in beat_slots:
+                slots.append((parse_chord(part), slot_duration))
+
+    if text[last_end:].strip():
+        raise ValueError("Unexpected text outside bar delimiters '|'.")
+    if not slots:
+        raise ValueError("Grid notation does not contain any chords.")
+
+    required_subdivisions = _lcm(subdivision_counts)
+    if required_subdivisions > max_subdivisions:
+        raise ValueError(
+            f"Grid requires {required_subdivisions} subdivisions/beat, "
+            f"exceeding the max {max_subdivisions}."
+        )
+
+    out: list[TimedChord] = []
+    active_chord, active_duration = slots[0]
+    for chord, duration in slots[1:]:
+        if chord == active_chord:
+            active_duration += duration
+            continue
+        out.append(TimedChord(chord=active_chord, duration=active_duration))
+        active_chord = chord
+        active_duration = duration
+    out.append(TimedChord(chord=active_chord, duration=active_duration))
+    return out
+
+
+def timed_progression_to_grid_notation(
+    progression: Sequence[str | TimedChord],
+    *,
+    beats_per_bar: int = DEFAULT_BEATS_PER_BAR,
+    max_subdivisions: int = MAX_GRID_SUBDIVISIONS,
+    pad_with_last_chord: bool = True,
+) -> str:
+    timed = [coerce_timed_chord(item) for item in progression]
+    if not timed:
+        return ""
+    if beats_per_bar <= 0:
+        raise ValueError("beats_per_bar must be positive.")
+
+    required_subdivisions = _lcm([item.duration.denominator for item in timed])
+    if required_subdivisions > max_subdivisions:
+        raise ValueError(
+            f"Progression requires {required_subdivisions} subdivisions/beat, "
+            f"exceeding the max {max_subdivisions}."
+        )
+
+    slots: list[str] = []
+    for item in timed:
+        slot_count = item.duration * required_subdivisions
+        if slot_count.denominator != 1:
+            raise ValueError(
+                f"Duration {format_duration(item.duration)} cannot align with subdivision "
+                f"{required_subdivisions}."
+            )
+        slots.extend([item.chord.to_token()] * slot_count.numerator)
+
+    if not slots:
+        return ""
+
+    slots_per_bar = beats_per_bar * required_subdivisions
+    if pad_with_last_chord and len(slots) % slots_per_bar != 0:
+        missing = slots_per_bar - (len(slots) % slots_per_bar)
+        slots.extend([slots[-1]] * missing)
+
+    if len(slots) % slots_per_bar != 0:
+        raise ValueError("Progression does not fill complete bars; enable padding to render.")
+
+    bars: list[str] = []
+    for bar_start in range(0, len(slots), slots_per_bar):
+        bar_slots = slots[bar_start:bar_start + slots_per_bar]
+        rendered_beats: list[str] = []
+        for beat_index in range(beats_per_bar):
+            beat_start = beat_index * required_subdivisions
+            beat_slots = bar_slots[beat_start:beat_start + required_subdivisions]
+            segments = [beat_slots[0]]
+            for chord_token in beat_slots[1:]:
+                if chord_token != segments[-1]:
+                    segments.append(chord_token)
+            rendered_beats.append(",".join(segments))
+        bars.append(f"| {' / '.join(rendered_beats)} |")
+
+    return "\n".join(bars)
+
+
+def parse_progression_text(raw: str, notation_mode: str = "auto") -> tuple[list[TimedChord], str]:
+    mode = notation_mode.strip().lower()
+    if mode not in {"auto", "duration", "grid"}:
+        raise ValueError('notation_mode must be "auto", "duration", or "grid".')
+
+    if mode == "grid":
+        return parse_chord_grid_notation(raw), "grid"
+    if mode == "duration":
+        return parse_progression_arg(raw), "duration"
+
+    if looks_like_chord_grid_notation(raw):
+        return parse_chord_grid_notation(raw), "grid"
+    return parse_progression_arg(raw), "duration"
 
 
 def timed_chord_tokens(chords: Sequence[TimedChord]) -> tuple[str, ...]:

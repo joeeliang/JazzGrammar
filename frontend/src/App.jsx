@@ -416,6 +416,7 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
 export default function App() {
   const initialDisplay = tokenizeProgression(DEFAULT_PROGRESSION);
   const [progressionInput, setProgressionInput] = useState(DEFAULT_PROGRESSION);
+  const [notationMode, setNotationMode] = useState("duration");
   const [durationUnit, setDurationUnit] = useState("beats");
   const [beatsPerBar, setBeatsPerBar] = useState("4");
   const [layers, setLayers] = useState([
@@ -423,6 +424,7 @@ export default function App() {
       id: "layer-0",
       progressionBeats: initialDisplay,
       progressionDisplay: initialDisplay,
+      progressionGrid: "",
       applied: null
     }
   ]);
@@ -440,17 +442,23 @@ export default function App() {
     return `${suggestions.length} suggestions`;
   }, [suggestions.length]);
 
-  function requestPayload(progressionText) {
+  function requestPayload(progressionText, mode = notationMode) {
     return {
       progression: progressionText,
+      notationMode: mode,
       durationUnit,
       beatsPerBar
     };
   }
 
-  async function refreshSuggestions(displayTokens) {
-    const progressionText = displayTokens.join(", ");
-    const data = await postJSON("/api/suggest", requestPayload(progressionText));
+  function layerTextForMode(layer, mode = notationMode) {
+    if (!layer) return "";
+    if (mode === "grid") return layer.progressionGrid || "";
+    return layer.progressionDisplay.join(", ");
+  }
+
+  async function refreshSuggestions(progressionText, mode = notationMode) {
+    const data = await postJSON("/api/suggest", requestPayload(progressionText, mode));
     setSuggestions(data.suggestions || []);
     setSelectedSuggestionId("");
     setInfo(`Loaded ${data.suggestions.length} suggestion(s).`);
@@ -463,15 +471,22 @@ export default function App() {
     setSelectedSuggestionId("");
 
     try {
-      const parseResponse = await postJSON("/api/parse", requestPayload(progressionInput));
+      const parseResponse = await postJSON("/api/parse", requestPayload(progressionInput, "auto"));
+      const parsedMode = parseResponse.meta?.notationMode || notationMode;
+      setNotationMode(parsedMode);
       const root = {
         id: "layer-0",
         progressionBeats: parseResponse.progression.beats,
         progressionDisplay: parseResponse.progression.display,
+        progressionGrid: parseResponse.progression.grid,
         applied: null
       };
       setLayers([root]);
-      await refreshSuggestions(root.progressionDisplay);
+      const rootText = layerTextForMode(root, parsedMode);
+      await refreshSuggestions(rootText, parsedMode);
+      if (rootText) {
+        setProgressionInput(rootText);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -484,7 +499,7 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
-      await refreshSuggestions(currentLayer.progressionDisplay);
+      await refreshSuggestions(layerTextForMode(currentLayer));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -501,6 +516,7 @@ export default function App() {
         id: `layer-${layers.length}`,
         progressionBeats: suggestion.result.beats,
         progressionDisplay: suggestion.result.display,
+        progressionGrid: suggestion.result.grid,
         applied: {
           rule: suggestion.rule,
           span: suggestion.span,
@@ -509,8 +525,11 @@ export default function App() {
       };
       const nextLayers = [...layers, nextLayer];
       setLayers(nextLayers);
-      await refreshSuggestions(nextLayer.progressionDisplay);
-      setProgressionInput(nextLayer.progressionDisplay.join(", "));
+      const nextText = layerTextForMode(nextLayer);
+      await refreshSuggestions(nextText);
+      if (nextText) {
+        setProgressionInput(nextText);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -528,13 +547,13 @@ export default function App() {
         <h1>Jazz Grammar Explorer</h1>
         <p className="subtitle">Rule-driven suggestions from backend grammar rewrites.</p>
 
-        <label className="field-label" htmlFor="progression-input">Progression input (@ durations)</label>
+        <label className="field-label" htmlFor="progression-input">Progression input (@ durations or chord grid)</label>
         <textarea
           id="progression-input"
           value={progressionInput}
           onChange={(event) => setProgressionInput(event.target.value)}
           rows={4}
-          placeholder="I@1, IV@1, V7@2"
+          placeholder={"I@1, IV@1, V7@2\nor\n| I / I,ii / ii / ii |"}
         />
 
         <div className="row">
@@ -712,6 +731,11 @@ export default function App() {
               onChange={(event) => updateCfg("labelPadY", Number(event.target.value))}
             />
           </div>
+        </aside>
+
+        <aside id="grid-output" className="ui-panel" aria-label="Generated chord grid output">
+          <h2>Generated Chord Grid</h2>
+          <pre>{currentLayer?.progressionGrid || "Run Start to render grid notation."}</pre>
         </aside>
       </main>
     </div>
