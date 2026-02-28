@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const DEFAULT_PROGRESSION = "I@1, IV@1, V7@2";
+const KEY_OPTIONS = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 const DEFAULT_CFG = {
   maxDepth: 6,
   layerGap: 110,
@@ -432,6 +433,8 @@ export default function App() {
   const [notationMode, setNotationMode] = useState("duration");
   const [durationUnit, setDurationUnit] = useState("beats");
   const [beatsPerBar, setBeatsPerBar] = useState("4");
+  const [displayMode, setDisplayMode] = useState("roman");
+  const [displayKey, setDisplayKey] = useState("C");
   const [layers, setLayers] = useState([
     {
       id: "layer-0",
@@ -455,26 +458,97 @@ export default function App() {
     return `${suggestions.length} suggestions`;
   }, [suggestions.length]);
 
-  function requestPayload(progressionText, mode = notationMode) {
-    return {
+  function requestPayload(
+    progressionText,
+    mode = notationMode,
+    nextDisplayMode = displayMode,
+    nextDisplayKey = displayKey,
+    nextInputDurationUnit = null
+  ) {
+    const payload = {
       progression: progressionText,
       notationMode: mode,
       durationUnit,
-      beatsPerBar
+      beatsPerBar,
+      displayMode: nextDisplayMode,
+      displayKey: nextDisplayKey
     };
+    if (nextInputDurationUnit) {
+      payload.inputDurationUnit = nextInputDurationUnit;
+    }
+    return payload;
   }
 
-  function layerTextForMode(layer, mode = notationMode) {
-    if (!layer) return "";
-    if (mode === "grid") return layer.progressionGrid || "";
-    return layer.progressionDisplay.join(", ");
-  }
-
-  async function refreshSuggestions(progressionText, mode = notationMode) {
-    const data = await postJSON("/api/suggest", requestPayload(progressionText, mode));
+  async function refreshSuggestions(
+    progressionText,
+    mode = notationMode,
+    nextDisplayMode = displayMode,
+    nextDisplayKey = displayKey,
+    nextInputDurationUnit = "beats"
+  ) {
+    const data = await postJSON(
+      "/api/suggest",
+      requestPayload(
+        progressionText,
+        mode,
+        nextDisplayMode,
+        nextDisplayKey,
+        nextInputDurationUnit
+      )
+    );
     setSuggestions(data.suggestions || []);
     setSelectedSuggestionId("");
     setInfo(`Loaded ${data.suggestions.length} suggestion(s).`);
+  }
+
+  async function rehydrateDisplay(nextDisplayMode, nextDisplayKey) {
+    if (layers.length === 0) return;
+    setBusy(true);
+    setError("");
+    try {
+      const refreshedLayers = [];
+      for (const layer of layers) {
+        const progressionText = layer.progressionBeats.join(", ");
+        const parseResponse = await postJSON(
+          "/api/parse",
+          requestPayload(
+            progressionText,
+            "duration",
+            nextDisplayMode,
+            nextDisplayKey,
+            "beats"
+          )
+        );
+        refreshedLayers.push({
+          ...layer,
+          progressionDisplay: parseResponse.progression.display,
+          progressionGrid: parseResponse.progression.grid
+        });
+      }
+      setLayers(refreshedLayers);
+      const active = refreshedLayers[refreshedLayers.length - 1];
+      await refreshSuggestions(
+        active.progressionBeats.join(", "),
+        "duration",
+        nextDisplayMode,
+        nextDisplayKey
+      );
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDisplayModeChange(nextMode) {
+    setDisplayMode(nextMode);
+    await rehydrateDisplay(nextMode, displayKey);
+  }
+
+  async function handleDisplayKeyChange(nextKey) {
+    setDisplayKey(nextKey);
+    if (displayMode === "roman") return;
+    await rehydrateDisplay(displayMode, nextKey);
   }
 
   async function handleStart() {
@@ -495,10 +569,11 @@ export default function App() {
         applied: null
       };
       setLayers([root]);
-      const rootText = layerTextForMode(root, parsedMode);
-      await refreshSuggestions(rootText, parsedMode);
-      if (rootText) {
-        setProgressionInput(rootText);
+      await refreshSuggestions(root.progressionBeats.join(", "), "duration");
+      if (parsedMode === "grid") {
+        setProgressionInput(root.progressionGrid || progressionInput);
+      } else {
+        setProgressionInput(root.progressionBeats.join(", "));
       }
     } catch (err) {
       setError(err.message);
@@ -512,7 +587,7 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
-      await refreshSuggestions(layerTextForMode(currentLayer));
+      await refreshSuggestions(currentLayer.progressionBeats.join(", "), "duration");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -538,10 +613,11 @@ export default function App() {
       };
       const nextLayers = [...layers, nextLayer];
       setLayers(nextLayers);
-      const nextText = layerTextForMode(nextLayer);
-      await refreshSuggestions(nextText);
-      if (nextText) {
-        setProgressionInput(nextText);
+      await refreshSuggestions(nextLayer.progressionBeats.join(", "), "duration");
+      if (notationMode === "grid") {
+        setProgressionInput(nextLayer.progressionGrid || progressionInput);
+      } else {
+        setProgressionInput(nextLayer.progressionBeats.join(", "));
       }
     } catch (err) {
       setError(err.message);
@@ -591,6 +667,32 @@ export default function App() {
             value={beatsPerBar}
             onChange={(event) => setBeatsPerBar(event.target.value)}
           />
+        </div>
+
+        <div className="row">
+          <label className="field-label" htmlFor="display-mode">Display</label>
+          <select
+            id="display-mode"
+            value={displayMode}
+            onChange={(event) => handleDisplayModeChange(event.target.value)}
+          >
+            <option value="roman">Roman numerals</option>
+            <option value="key">Realized key</option>
+          </select>
+        </div>
+
+        <div className="row">
+          <label className="field-label" htmlFor="display-key">Key</label>
+          <select
+            id="display-key"
+            value={displayKey}
+            onChange={(event) => handleDisplayKeyChange(event.target.value)}
+            disabled={busy || displayMode === "roman"}
+          >
+            {KEY_OPTIONS.map((keyName) => (
+              <option key={keyName} value={keyName}>{keyName}</option>
+            ))}
+          </select>
         </div>
 
         <div className="button-row">

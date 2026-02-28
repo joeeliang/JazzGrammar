@@ -3,9 +3,11 @@ import unittest
 from jazz_grammar import (
     explore_sequences_by_depth,
     find_next_steps,
+    key_tonic_semitone,
     parse_chord_grid_notation,
     parse_progression_text,
     parse_timed_chord_token,
+    realize_progression,
     timed_progression_to_grid_notation,
 )
 
@@ -71,6 +73,22 @@ class JazzGrammarTests(unittest.TestCase):
         progression, mode = parse_progression_text("| I / I,ii / ii / ii |")
         self.assertEqual(mode, "grid")
         self.assertEqual([item.to_token() for item in progression], ["I@3/2", "IIm@5/2"])
+
+    def test_realize_progression_in_c_major(self) -> None:
+        realized = realize_progression(["I@1", "IV@1", "V7@2"], "C", show_unit_one=True)
+        self.assertEqual(realized, ["C@1", "F@1", "G7@2"])
+
+    def test_realize_progression_uses_flat_spelling_in_flat_keys(self) -> None:
+        realized = realize_progression(["III@1"], "Gb", show_unit_one=True)
+        self.assertEqual(realized, ["Bb@1"])
+
+    def test_realize_progression_supports_accidentals(self) -> None:
+        realized = realize_progression(["bII@1", "#IVm7@1"], "Db", show_unit_one=True)
+        self.assertEqual(realized, ["D@1", "Gm7@1"])
+
+    def test_invalid_key_name_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            key_tonic_semitone("H")
 
 
 if __name__ == "__main__":
