@@ -1,6 +1,13 @@
 import unittest
 
-from jazz_grammar import find_next_steps, explore_sequences_by_depth, parse_timed_chord_token
+from jazz_grammar import (
+    explore_sequences_by_depth,
+    find_next_steps,
+    parse_chord_grid_notation,
+    parse_progression_text,
+    parse_timed_chord_token,
+    timed_progression_to_grid_notation,
+)
 
 
 class JazzGrammarTests(unittest.TestCase):
@@ -51,6 +58,19 @@ class JazzGrammarTests(unittest.TestCase):
         levels = explore_sequences_by_depth(["I@2"], depth=3)
         for sequences in levels.values():
             self.assertEqual(len(sequences), len(set(sequences)))
+
+    def test_parse_grid_notation_to_timed_chords(self) -> None:
+        progression = parse_chord_grid_notation("| I / I,ii / ii / ii |")
+        self.assertEqual([item.to_token() for item in progression], ["I@3/2", "IIm@5/2"])
+
+    def test_render_timed_chords_to_grid_notation(self) -> None:
+        rendered = timed_progression_to_grid_notation(["I@3/2", "IIm@1/2"])
+        self.assertEqual(rendered, "| I / I,IIm / IIm / IIm |")
+
+    def test_parse_progression_text_auto_detects_grid(self) -> None:
+        progression, mode = parse_progression_text("| I / I,ii / ii / ii |")
+        self.assertEqual(mode, "grid")
+        self.assertEqual([item.to_token() for item in progression], ["I@3/2", "IIm@5/2"])
 
 
 if __name__ == "__main__":

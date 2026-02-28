@@ -25,6 +25,64 @@ function tokenizeProgression(progression) {
   return progression.split(",").map((part) => part.trim()).filter(Boolean);
 }
 
+function chordLabel(token) {
+  return token.split("@")[0].trim();
+}
+
+function durationInBeats(token) {
+  const at = token.lastIndexOf("@");
+  if (at < 0) return 1;
+  const raw = token.slice(at + 1).trim();
+  if (!raw) return 1;
+  if (raw.includes("/")) {
+    const [num, den] = raw.split("/");
+    const n = Number(num);
+    const d = Number(den);
+    if (!Number.isFinite(n) || !Number.isFinite(d) || d === 0) return 1;
+    return n / d;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : 1;
+}
+
+function extractGridMarkers(gridText) {
+  if (!gridText || typeof gridText !== "string") return [];
+  const markers = [];
+  const lines = gridText.split("\n").map((line) => line.trim()).filter(Boolean);
+  let beatOffset = 0;
+
+  lines.forEach((line) => {
+    const match = line.match(/^\|\s*(.*?)\s*\|$/);
+    if (!match) return;
+    const beats = match[1].split("/").map((beat) => beat.trim());
+    markers.push({ beat: beatOffset, symbol: "|" });
+    beats.forEach((beatText, beatIndex) => {
+      if (beatIndex > 0) {
+        markers.push({ beat: beatOffset + beatIndex, symbol: "/" });
+      }
+      const parts = beatText.split(",").map((part) => part.trim()).filter(Boolean);
+      const count = Math.max(1, parts.length);
+      for (let subIndex = 1; subIndex < count; subIndex += 1) {
+        markers.push({
+          beat: beatOffset + beatIndex + (subIndex / count),
+          symbol: ","
+        });
+      }
+    });
+    beatOffset += 4;
+    markers.push({ beat: beatOffset, symbol: "|" });
+  });
+
+  const unique = new Map();
+  markers.forEach((marker, index) => {
+    const key = `${marker.symbol}@${marker.beat.toFixed(4)}`;
+    if (!unique.has(key)) {
+      unique.set(key, { ...marker, id: `${key}-${index}` });
+    }
+  });
+  return Array.from(unique.values());
+}
+
 async function postJSON(path, payload) {
   const response = await fetch(path, {
     method: "POST",
@@ -158,10 +216,10 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
 
     const visibleLayerCount = Math.min(layers.length, cfg.maxDepth + 1);
     const visibleLayers = layers.slice(0, visibleLayerCount);
-    const deepestVisibleLayer = Math.max(0, visibleLayers.length - 1);
     const nodes = [];
     const edges = [];
     const brackets = [];
+    const timeMarkers = [];
     const byId = new Map();
     const byLayer = new Map();
 
@@ -174,8 +232,14 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
         index,
         parentId: null,
         children: [],
+        durationBeats: 1,
+        startBeat: 0,
         x: width / 2,
-        y: height / 2,
+        y: 0,
+        left: 0,
+        right: 0,
+        bw: 0,
+        bh: 0,
         bounds: {}
       };
       nodes.push(node);
@@ -187,8 +251,30 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
 
     visibleLayers.forEach((layerData, layerIndex) => {
       const kind = layerIndex === 0 ? "root" : "tree";
-      layerData.progressionDisplay.forEach((token, tokenIndex) => {
-        makeNode({ label: token, kind, layer: layerIndex, index: tokenIndex });
+      const sourceTokens = layerData.progressionBeats && layerData.progressionBeats.length > 0
+        ? layerData.progressionBeats
+        : layerData.progressionDisplay;
+      let cursor = 0;
+      sourceTokens.forEach((token, tokenIndex) => {
+        const node = makeNode({
+          label: chordLabel(token),
+          kind,
+          layer: layerIndex,
+          index: tokenIndex
+        });
+        node.durationBeats = durationInBeats(token);
+        node.startBeat = cursor;
+        cursor += node.durationBeats;
+      });
+
+      const layerMarkers = extractGridMarkers(layerData.progressionGrid);
+      layerMarkers.forEach((marker) => {
+        timeMarkers.push({
+          id: `m-${layerIndex}-${marker.id}`,
+          layer: layerIndex,
+          beat: marker.beat,
+          symbol: marker.symbol
+        });
       });
     });
 
@@ -235,106 +321,38 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
       }
     }
 
-    let finalRowY = height / 2 + cfg.layerGap * 2;
-    const projectedLeafIds = new Set();
-    let finals = [];
-
     function updateLayout() {
-      const leaves = nodes.filter((n) => n.layer === deepestVisibleLayer);
-      const deepestLeafLayer = leaves.reduce((mx, n) => Math.max(mx, n.layer), 0);
-      finalRowY = height / 2 + deepestLeafLayer * cfg.layerGap;
-      finals = leaves
-        .filter((n) => projectedLeafIds.has(n.id))
-        .map((n) => ({ id: `f-${n.id}`, sourceId: n.id, label: n.label }));
-
       const y0 = height / 2;
-      nodes.forEach((n) => {
-        n.y = y0 + n.layer * cfg.layerGap;
-      });
-      const roots = (byLayer.get(0) || []).slice().sort((a, b) => a.index - b.index);
+      const leftPad = clamp(width * 0.06, 45, 90);
+      const rightPad = clamp(width * 0.06, 45, 90);
 
-      function calcSize(node) {
+      const nodeEndBeats = nodes.map((node) => node.startBeat + node.durationBeats);
+      const markerBeats = timeMarkers.map((marker) => marker.beat);
+      const maxBeat = Math.max(1, ...nodeEndBeats, ...markerBeats);
+      const pxPerBeat = (width - leftPad - rightPad) / maxBeat;
+
+      nodes.forEach((node) => {
         const box = labelBox(node.label, fontPx(node.kind));
-        node.bw = box.width + cfg.subtreePadX * 2;
+        node.y = y0 + node.layer * cfg.layerGap;
+        node.left = leftPad + node.startBeat * pxPerBeat;
+        node.right = leftPad + (node.startBeat + node.durationBeats) * pxPerBeat;
+        node.bw = Math.max(8, node.right - node.left - 2);
         node.bh = box.height + cfg.subtreePadY * 2;
-
-        if (node.layer === deepestVisibleLayer || node.children.length === 0) {
-          if (projectedLeafIds.has(node.id)) {
-            const finalW = labelBox(node.label, clamp(width * 0.03, 22, 34)).width;
-            node.sw = Math.max(node.bw, finalW + cfg.subtreePadX * 2);
-          } else {
-            node.sw = node.bw;
-          }
-          return;
-        }
-
-        let childrenWidth = 0;
-        node.children.forEach((childId) => {
-          const child = byId.get(childId);
-          if (!child) return;
-          calcSize(child);
-          childrenWidth += child.sw;
-        });
-        childrenWidth += (Math.max(0, node.children.length - 1)) * cfg.collisionPadding;
-        node.sw = Math.max(node.bw, childrenWidth);
-      }
-
-      let totalTreeW = 0;
-      roots.forEach((root) => {
-        calcSize(root);
-        totalTreeW += root.sw;
-      });
-      totalTreeW += (Math.max(0, roots.length - 1)) * cfg.collisionPadding;
-      let startX = width / 2 - totalTreeW / 2;
-
-      function positionNode(node, x) {
-        node.x = x;
-        if (node.layer === deepestVisibleLayer || node.children.length === 0) return;
-        const children = node.children.map((id) => byId.get(id)).filter(Boolean);
-        let childTotal = children.reduce((acc, child) => acc + child.sw, 0);
-        childTotal += Math.max(0, children.length - 1) * cfg.collisionPadding;
-        let cx = x - childTotal / 2;
-        children.forEach((child) => {
-          positionNode(child, cx + child.sw / 2);
-          cx += child.sw + cfg.collisionPadding;
-        });
-      }
-
-      roots.forEach((root) => {
-        positionNode(root, startX + root.sw / 2);
-        startX += root.sw + cfg.collisionPadding;
+        node.x = (node.left + node.right) / 2;
+        node.bounds = {
+          left: node.x - node.bw / 2,
+          right: node.x + node.bw / 2,
+          top: node.y - node.bh / 2,
+          bottom: node.y + node.bh / 2,
+          width: node.bw,
+          height: node.bh
+        };
       });
 
-      function calcBounds(node) {
-        let left = node.x - node.bw / 2;
-        let right = node.x + node.bw / 2;
-        let top = node.y - node.bh / 2;
-        let bottom = node.y + node.bh / 2;
-
-        if (node.layer === deepestVisibleLayer || node.children.length === 0) {
-          if (projectedLeafIds.has(node.id)) {
-            const finalBox = labelBox(node.label, clamp(width * 0.03, 22, 34));
-            left = Math.min(left, node.x - finalBox.width / 2 - cfg.subtreePadX);
-            right = Math.max(right, node.x + finalBox.width / 2 + cfg.subtreePadX);
-            bottom = Math.max(bottom, finalRowY + finalBox.height / 2 + cfg.subtreePadY);
-          }
-        } else {
-          node.children.forEach((childId) => {
-            const child = byId.get(childId);
-            if (!child) return;
-            const cb = calcBounds(child);
-            left = Math.min(left, cb.left);
-            right = Math.max(right, cb.right);
-            top = Math.min(top, cb.top, node.y + 12);
-            bottom = Math.max(bottom, cb.bottom, node.y + 12);
-          });
-        }
-
-        node.bounds = { left, right, top, bottom, width: right - left, height: bottom - top };
-        return node.bounds;
-      }
-
-      roots.forEach((root) => calcBounds(root));
+      timeMarkers.forEach((marker) => {
+        marker.x = leftPad + marker.beat * pxPerBeat;
+        marker.y = y0 + marker.layer * cfg.layerGap - 34;
+      });
     }
 
     function renderD3() {
@@ -361,18 +379,7 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
         .attr("height", (d) => d.bounds.height)
         .attr("opacity", showBoxes ? 1 : 0);
 
-      finalLayer.selectAll("line.final-drop").data(finals, (d) => d.id).join("line")
-        .attr("class", "final-drop")
-        .attr("x1", (d) => byId.get(d.sourceId).x)
-        .attr("y1", (d) => byId.get(d.sourceId).y + 16)
-        .attr("x2", (d) => byId.get(d.sourceId).x)
-        .attr("y2", finalRowY - 20);
-
-      finalLayer.selectAll("text.final-chord").data(finals, (d) => d.id).join("text")
-        .attr("class", "final-chord")
-        .text((d) => d.label)
-        .attr("x", (d) => byId.get(d.sourceId).x)
-        .attr("y", finalRowY);
+      finalLayer.selectAll("*").remove();
 
       const bracketData = brackets.map((bracket) => {
         const layerNodes = byLayer.get(bracket.layer) || [];
@@ -400,6 +407,12 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
         .text((d) => `Rule ${d.rule}`)
         .attr("x", (d) => (d.left + d.right) / 2)
         .attr("y", (d) => d.y + 24);
+
+      annotationLayer.selectAll("text.temporal-marker").data(timeMarkers, (d) => d.id).join("text")
+        .attr("class", "substitution-label temporal-marker")
+        .text((d) => d.symbol)
+        .attr("x", (d) => d.x)
+        .attr("y", (d) => d.y);
     }
 
     updateLayout();
@@ -416,6 +429,7 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
 export default function App() {
   const initialDisplay = tokenizeProgression(DEFAULT_PROGRESSION);
   const [progressionInput, setProgressionInput] = useState(DEFAULT_PROGRESSION);
+  const [notationMode, setNotationMode] = useState("duration");
   const [durationUnit, setDurationUnit] = useState("beats");
   const [beatsPerBar, setBeatsPerBar] = useState("4");
   const [layers, setLayers] = useState([
@@ -423,6 +437,7 @@ export default function App() {
       id: "layer-0",
       progressionBeats: initialDisplay,
       progressionDisplay: initialDisplay,
+      progressionGrid: "",
       applied: null
     }
   ]);
@@ -440,17 +455,23 @@ export default function App() {
     return `${suggestions.length} suggestions`;
   }, [suggestions.length]);
 
-  function requestPayload(progressionText) {
+  function requestPayload(progressionText, mode = notationMode) {
     return {
       progression: progressionText,
+      notationMode: mode,
       durationUnit,
       beatsPerBar
     };
   }
 
-  async function refreshSuggestions(displayTokens) {
-    const progressionText = displayTokens.join(", ");
-    const data = await postJSON("/api/suggest", requestPayload(progressionText));
+  function layerTextForMode(layer, mode = notationMode) {
+    if (!layer) return "";
+    if (mode === "grid") return layer.progressionGrid || "";
+    return layer.progressionDisplay.join(", ");
+  }
+
+  async function refreshSuggestions(progressionText, mode = notationMode) {
+    const data = await postJSON("/api/suggest", requestPayload(progressionText, mode));
     setSuggestions(data.suggestions || []);
     setSelectedSuggestionId("");
     setInfo(`Loaded ${data.suggestions.length} suggestion(s).`);
@@ -463,15 +484,22 @@ export default function App() {
     setSelectedSuggestionId("");
 
     try {
-      const parseResponse = await postJSON("/api/parse", requestPayload(progressionInput));
+      const parseResponse = await postJSON("/api/parse", requestPayload(progressionInput, "auto"));
+      const parsedMode = parseResponse.meta?.notationMode || notationMode;
+      setNotationMode(parsedMode);
       const root = {
         id: "layer-0",
         progressionBeats: parseResponse.progression.beats,
         progressionDisplay: parseResponse.progression.display,
+        progressionGrid: parseResponse.progression.grid,
         applied: null
       };
       setLayers([root]);
-      await refreshSuggestions(root.progressionDisplay);
+      const rootText = layerTextForMode(root, parsedMode);
+      await refreshSuggestions(rootText, parsedMode);
+      if (rootText) {
+        setProgressionInput(rootText);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -484,7 +512,7 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
-      await refreshSuggestions(currentLayer.progressionDisplay);
+      await refreshSuggestions(layerTextForMode(currentLayer));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -501,6 +529,7 @@ export default function App() {
         id: `layer-${layers.length}`,
         progressionBeats: suggestion.result.beats,
         progressionDisplay: suggestion.result.display,
+        progressionGrid: suggestion.result.grid,
         applied: {
           rule: suggestion.rule,
           span: suggestion.span,
@@ -509,8 +538,11 @@ export default function App() {
       };
       const nextLayers = [...layers, nextLayer];
       setLayers(nextLayers);
-      await refreshSuggestions(nextLayer.progressionDisplay);
-      setProgressionInput(nextLayer.progressionDisplay.join(", "));
+      const nextText = layerTextForMode(nextLayer);
+      await refreshSuggestions(nextText);
+      if (nextText) {
+        setProgressionInput(nextText);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -528,13 +560,13 @@ export default function App() {
         <h1>Jazz Grammar Explorer</h1>
         <p className="subtitle">Rule-driven suggestions from backend grammar rewrites.</p>
 
-        <label className="field-label" htmlFor="progression-input">Progression input (@ durations)</label>
+        <label className="field-label" htmlFor="progression-input">Progression input (@ durations or chord grid)</label>
         <textarea
           id="progression-input"
           value={progressionInput}
           onChange={(event) => setProgressionInput(event.target.value)}
           rows={4}
-          placeholder="I@1, IV@1, V7@2"
+          placeholder={"I@1, IV@1, V7@2\nor\n| I / I,ii / ii / ii |"}
         />
 
         <div className="row">
@@ -712,6 +744,11 @@ export default function App() {
               onChange={(event) => updateCfg("labelPadY", Number(event.target.value))}
             />
           </div>
+        </aside>
+
+        <aside id="grid-output" className="ui-panel" aria-label="Generated chord grid output">
+          <h2>Generated Chord Grid</h2>
+          <pre>{currentLayer?.progressionGrid || "Run Start to render grid notation."}</pre>
         </aside>
       </main>
     </div>
