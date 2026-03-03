@@ -269,7 +269,26 @@ button:disabled {
 .branch { stroke: #000; stroke-width: 1.4; }
 .branch.changed { stroke: #b02b2b; stroke-width: 1.9; }
 .final-drop { stroke: #000; stroke-width: 1.2; }
-.subtree-box { stroke-width: 1.4; pointer-events: none; rx: 4px; ry: 4px; }
+.subtree-box {
+  stroke-width: 1.4;
+  pointer-events: none;
+  rx: 4px;
+  ry: 4px;
+  transition: opacity 120ms ease, stroke-width 120ms ease, filter 120ms ease;
+}
+.subtree-box.is-clickable {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.subtree-box.is-clickable:hover {
+  stroke-width: 2.3;
+  filter: saturate(1.1);
+}
+.subtree-box.is-active-selection {
+  stroke: #111 !important;
+  stroke-width: 3.2;
+  filter: saturate(1.25);
+}
 .substitution-bracket { stroke: #000; stroke-width: 1.2; fill: none; }
 .substitution-label {
   fill: #000;

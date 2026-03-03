@@ -92,7 +92,7 @@ function buildChildParentMap(parentCount, childCount, applied) {
   return map;
 }
 
-function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
+function D3ProgressionDiagram({ layers, cfg, showBoxes, selectedChord, onSelectChord }) {
   const hostRef = useRef(null);
   const svgRef = useRef(null);
   const sceneRef = useRef(null);
@@ -184,6 +184,7 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
 
     const visibleLayerCount = Math.min(layers.length, cfg.maxDepth + 1);
     const visibleLayers = layers.slice(0, visibleLayerCount);
+    const activeLayerIndex = Math.max(0, visibleLayers.length - 1);
     const nodes = [];
     const edges = [];
     const brackets = [];
@@ -328,14 +329,29 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
         .attr("y2", (d) => byId.get(d.targetId).y - 18);
 
       boxLayer.selectAll("rect.subtree-box").data(nodes, (d) => d.id).join("rect")
-        .attr("class", "subtree-box")
+        .attr("class", (d) => {
+          const isSelected = selectedChord
+            && selectedChord.layer === d.layer
+            && selectedChord.index === d.index;
+          const clickable = showBoxes && d.layer === activeLayerIndex;
+          return `subtree-box${clickable ? " is-clickable" : ""}${isSelected ? " is-active-selection" : ""}`;
+        })
         .attr("stroke", (d) => BOX_COLORS[d.layer % BOX_COLORS.length].stroke)
         .attr("fill", (d) => BOX_COLORS[d.layer % BOX_COLORS.length].fill)
         .attr("x", (d) => d.bounds.left)
         .attr("y", (d) => d.bounds.top)
         .attr("width", (d) => d.bounds.width)
         .attr("height", (d) => d.bounds.height)
-        .attr("opacity", showBoxes ? 1 : 0);
+        .attr("opacity", (d) => {
+          if (!showBoxes) return 0;
+          if (selectedChord && selectedChord.layer === d.layer && selectedChord.index === d.index) return 1;
+          return d.layer === activeLayerIndex ? 0.92 : 0.42;
+        })
+        .on("click", (event, d) => {
+          if (!showBoxes || d.layer !== activeLayerIndex || !onSelectChord) return;
+          event.stopPropagation();
+          onSelectChord({ layer: d.layer, index: d.index });
+        });
 
       finalLayer.selectAll("*").remove();
 
@@ -370,7 +386,7 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
 
     updateLayout();
     renderD3();
-  }, [cfg, layers, showBoxes, size.height, size.width]);
+  }, [cfg, layers, onSelectChord, selectedChord, showBoxes, size.height, size.width]);
 
   return (
     <div ref={hostRef} id="notes-display">
@@ -402,14 +418,45 @@ export default function App() {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("Default progression loaded. Click Start to fetch backend suggestions.");
   const [selectedSuggestionId, setSelectedSuggestionId] = useState("");
+  const [selectedChord, setSelectedChord] = useState(null);
   const [showBoxes, setShowBoxes] = useState(true);
   const [cfg, setCfg] = useState(DEFAULT_CFG);
 
   const currentLayer = layers.length > 0 ? layers[layers.length - 1] : null;
+  const currentLayerIndex = Math.max(0, layers.length - 1);
+  const filteredSuggestions = useMemo(() => {
+    if (!selectedChord || selectedChord.layer !== currentLayerIndex) {
+      return suggestions;
+    }
+    return suggestions.filter((suggestion) => (
+      selectedChord.index >= suggestion.span[0] && selectedChord.index < suggestion.span[1]
+    ));
+  }, [currentLayerIndex, selectedChord, suggestions]);
   const suggestionCountLabel = useMemo(() => {
-    if (suggestions.length === 1) return "1 suggestion";
-    return `${suggestions.length} suggestions`;
-  }, [suggestions.length]);
+    const count = filteredSuggestions.length;
+    if (selectedChord && selectedChord.layer === currentLayerIndex) {
+      return `${count} of ${suggestions.length} suggestions`;
+    }
+    if (count === 1) return "1 suggestion";
+    return `${count} suggestions`;
+  }, [currentLayerIndex, filteredSuggestions.length, selectedChord, suggestions.length]);
+
+  useEffect(() => {
+    setSelectedChord(null);
+  }, [currentLayerIndex]);
+
+  function handleSelectChord(nextSelection) {
+    if (!nextSelection) {
+      setSelectedChord(null);
+      return;
+    }
+    setSelectedChord((prev) => {
+      if (prev && prev.layer === nextSelection.layer && prev.index === nextSelection.index) {
+        return null;
+      }
+      return nextSelection;
+    });
+  }
 
   function requestPayload(
     progressionText,
@@ -591,7 +638,7 @@ export default function App() {
     <div className="app-shell">
       <aside className="left-panel ui-panel">
         <h1>Jazz Grammar Explorer</h1>
-        <p className="subtitle">Transformation-driven suggestions from backend grammar rewrites.</p>
+        <p className="subtitle">Click a current-layer box to focus options by chord span.</p>
 
         <label className="field-label" htmlFor="progression-input">Progression input (@ durations or chord grid)</label>
         <textarea
@@ -666,8 +713,10 @@ export default function App() {
         <div className="suggestions-list">
           {suggestions.length === 0 ? (
             <div className="empty">No suggestions yet.</div>
+          ) : filteredSuggestions.length === 0 ? (
+            <div className="empty">No suggestions for the selected chord.</div>
           ) : (
-            suggestions.map((suggestion) => {
+            filteredSuggestions.map((suggestion) => {
               const isSelected = selectedSuggestionId === suggestion.id;
               return (
                 <button
@@ -692,7 +741,13 @@ export default function App() {
       </aside>
 
       <main className="canvas-shell">
-        <D3ProgressionDiagram layers={layers} cfg={cfg} showBoxes={showBoxes} />
+        <D3ProgressionDiagram
+          layers={layers}
+          cfg={cfg}
+          showBoxes={showBoxes}
+          selectedChord={selectedChord}
+          onSelectChord={handleSelectChord}
+        />
 
         <aside id="controls" className="ui-panel" aria-label="Layout controls">
           <h2>Tuning</h2>
