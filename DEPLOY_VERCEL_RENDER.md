@@ -2,7 +2,7 @@ This guide matches the current codebase:
 
 - Frontend: Vite + React in `frontend/`
 - Backend: FastAPI app in `backend/api_server.py`
-- Backend start command: `uvicorn backend.api_server:app --host 0.0.0.0 --port $PORT`
+- Backend start command: `uvicorn api_server:app --app-dir backend --host 0.0.0.0 --port $PORT`
 
 ## 1) Local development workflow
 
@@ -42,7 +42,7 @@ npm run dev
 
 - Environment: `Python`
 - Build Command: `pip install -r backend/requirements.txt`
-- Start Command: `uvicorn backend.api_server:app --host 0.0.0.0 --port $PORT`
+- Start Command: `uvicorn api_server:app --app-dir backend --host 0.0.0.0 --port $PORT`
 
 4. Add environment variables:
 

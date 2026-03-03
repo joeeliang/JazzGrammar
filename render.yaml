@@ -3,7 +3,7 @@ services:
     name: jazz-grammar-api
     env: python
     buildCommand: pip install -r backend/requirements.txt
-    startCommand: uvicorn backend.api_server:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn api_server:app --app-dir backend --host 0.0.0.0 --port $PORT
     envVars:
       - key: CORS_ALLOW_ORIGINS
         value: "*"
