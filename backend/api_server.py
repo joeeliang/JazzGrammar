@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""HTTP API wrapper for the jazz grammar engine."""
+"""FastAPI HTTP API wrapper for the jazz grammar engine."""
 
 from __future__ import annotations
 
 import argparse
 from fractions import Fraction
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
+import os
 from typing import Any, Sequence
+
+from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import uvicorn
 
 try:
     from jazz_grammar import (
@@ -33,6 +38,40 @@ except ModuleNotFoundError:
         realize_timed_chord,
         timed_progression_to_grid_notation,
     )
+
+
+def _parse_cors_origins() -> list[str]:
+    """Default to wildcard for quick setup; override with comma-separated origins."""
+    raw = os.getenv("CORS_ALLOW_ORIGINS", "*").strip()
+    if not raw or raw == "*":
+        return ["*"]
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+app = FastAPI(title="Jazz Grammar API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_parse_cors_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+
+@app.exception_handler(HTTPException)
+async def _http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
+    if exc.status_code == 404:
+        return JSONResponse(status_code=404, content={"error": "Not found."})
+    return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    message = "Invalid request payload."
+    if exc.errors():
+        first = exc.errors()[0]
+        message = first.get("msg") or message
+    return JSONResponse(status_code=400, content={"error": message})
 
 
 def _format_token(timed: TimedChord) -> str:
@@ -178,199 +217,149 @@ def _grid_for_display(tokens_in_beats: Sequence[str], display_mode: str, display
     )
 
 
-def _json_response(handler: BaseHTTPRequestHandler, status_code: int, payload: dict[str, Any]) -> None:
-    body = json.dumps(payload).encode("utf-8")
-    handler.send_response(status_code)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Headers", "Content-Type")
-    handler.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-    handler.end_headers()
-    handler.wfile.write(body)
+@app.get("/api/health")
+async def health() -> dict[str, bool]:
+    return {"ok": True}
 
 
-def _read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    content_length = int(handler.headers.get("Content-Length", "0"))
-    if content_length <= 0:
-        return {}
-    raw = handler.rfile.read(content_length).decode("utf-8")
-    if not raw.strip():
-        return {}
-    parsed = json.loads(raw)
-    if not isinstance(parsed, dict):
-        raise ValueError("Request body must be a JSON object.")
-    return parsed
-
-
-class JazzGrammarAPIHandler(BaseHTTPRequestHandler):
-    def do_OPTIONS(self) -> None:  # noqa: N802
-        _json_response(self, 200, {"ok": True})
-
-    def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/api/health":
-            _json_response(self, 200, {"ok": True})
-            return
-        _json_response(self, 404, {"error": "Not found."})
-
-    def do_POST(self) -> None:  # noqa: N802
-        try:
-            payload = _read_json_body(self)
-        except Exception as exc:  # noqa: BLE001
-            _json_response(self, 400, {"error": str(exc)})
-            return
-
-        if self.path == "/api/parse":
-            self._handle_parse(payload)
-            return
-        if self.path == "/api/suggest":
-            self._handle_suggest(payload)
-            return
-        _json_response(self, 404, {"error": "Not found."})
-
-    def _handle_parse(self, payload: dict[str, Any]) -> None:
-        try:
-            (
-                progression_in_beats,
-                duration_unit,
-                beats_per_bar,
-                notation_mode,
-                display_mode,
-                display_key,
-            ) = _parse_request(payload)
-        except Exception as exc:  # noqa: BLE001
-            _json_response(self, 400, {"error": str(exc)})
-            return
-
-        progression_beats = [_format_token(timed) for timed in progression_in_beats]
-        display_unit = duration_unit if notation_mode == "duration" else "beats"
-        progression_display = _timed_tokens_for_unit(
-            progression_beats,
-            display_unit,
+@app.post("/api/parse")
+async def parse(payload: dict[str, Any] | None = Body(default=None)) -> dict[str, Any]:
+    request_payload = payload or {}
+    try:
+        (
+            progression_in_beats,
+            duration_unit,
             beats_per_bar,
+            notation_mode,
             display_mode,
             display_key,
-        )
-        _json_response(
-            self,
-            200,
-            {
-                "progression": {
-                    "beats": progression_beats,
-                    "display": progression_display,
-                    "grid": _grid_for_tokens(progression_beats),
-                    "gridDisplay": _grid_for_display(progression_beats, display_mode, display_key),
-                },
-                "meta": {
-                    "notationMode": notation_mode,
-                    "durationUnit": duration_unit,
-                    "beatsPerBar": str(beats_per_bar),
-                    "displayMode": display_mode,
-                    "displayKey": display_key,
-                },
-            },
-        )
+        ) = _parse_request(request_payload)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    def _handle_suggest(self, payload: dict[str, Any]) -> None:
-        try:
-            (
-                progression_in_beats,
-                duration_unit,
-                beats_per_bar,
-                notation_mode,
-                display_mode,
-                display_key,
-            ) = _parse_request(payload)
-        except Exception as exc:  # noqa: BLE001
-            _json_response(self, 400, {"error": str(exc)})
-            return
+    progression_beats = [_format_token(timed) for timed in progression_in_beats]
+    display_unit = duration_unit if notation_mode == "duration" else "beats"
+    progression_display = _timed_tokens_for_unit(
+        progression_beats,
+        display_unit,
+        beats_per_bar,
+        display_mode,
+        display_key,
+    )
+    return {
+        "progression": {
+            "beats": progression_beats,
+            "display": progression_display,
+            "grid": _grid_for_tokens(progression_beats),
+            "gridDisplay": _grid_for_display(progression_beats, display_mode, display_key),
+        },
+        "meta": {
+            "notationMode": notation_mode,
+            "durationUnit": duration_unit,
+            "beatsPerBar": str(beats_per_bar),
+            "displayMode": display_mode,
+            "displayKey": display_key,
+        },
+    }
 
-        progression_beats = [_format_token(timed) for timed in progression_in_beats]
-        display_unit = duration_unit if notation_mode == "duration" else "beats"
-        base_display = _timed_tokens_for_unit(
-            progression_beats,
-            display_unit,
+
+@app.post("/api/suggest")
+async def suggest(payload: dict[str, Any] | None = Body(default=None)) -> dict[str, Any]:
+    request_payload = payload or {}
+    try:
+        (
+            progression_in_beats,
+            duration_unit,
             beats_per_bar,
+            notation_mode,
             display_mode,
             display_key,
-        )
-        applications = find_next_steps(progression_in_beats)
+        ) = _parse_request(request_payload)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        suggestions: list[dict[str, Any]] = []
-        for index, app in enumerate(applications, start=1):
-            before_beats = [_format_token(parse_timed_chord_token(token)) for token in app.before]
-            replacement_beats = [_format_token(parse_timed_chord_token(token)) for token in app.replacement]
-            result_beats = [_format_token(parse_timed_chord_token(token)) for token in app.result]
-            suggestions.append(
-                {
-                    "id": f"{app.rule}-{app.start}-{app.end}-{index}",
-                    "rule": app.rule,
-                    "span": [app.start, app.end],
-                    "replacementSpanInResult": [app.start, app.start + len(app.replacement)],
-                    "before": {
-                        "beats": before_beats,
-                        "display": _timed_tokens_for_unit(
-                            before_beats,
-                            display_unit,
-                            beats_per_bar,
-                            display_mode,
-                            display_key,
-                        ),
-                        "grid": _grid_for_tokens(before_beats),
-                        "gridDisplay": _grid_for_display(before_beats, display_mode, display_key),
-                    },
-                    "replacement": {
-                        "beats": replacement_beats,
-                        "display": _timed_tokens_for_unit(
-                            replacement_beats,
-                            display_unit,
-                            beats_per_bar,
-                            display_mode,
-                            display_key,
-                        ),
-                        "grid": _grid_for_tokens(replacement_beats),
-                        "gridDisplay": _grid_for_display(
-                            replacement_beats,
-                            display_mode,
-                            display_key,
-                        ),
-                    },
-                    "result": {
-                        "beats": result_beats,
-                        "display": _timed_tokens_for_unit(
-                            result_beats,
-                            display_unit,
-                            beats_per_bar,
-                            display_mode,
-                            display_key,
-                        ),
-                        "grid": _grid_for_tokens(result_beats),
-                        "gridDisplay": _grid_for_display(result_beats, display_mode, display_key),
-                    },
-                    "summary": f"Rule {app.rule} on slots {app.start + 1}-{app.end}",
-                }
-            )
+    progression_beats = [_format_token(timed) for timed in progression_in_beats]
+    display_unit = duration_unit if notation_mode == "duration" else "beats"
+    base_display = _timed_tokens_for_unit(
+        progression_beats,
+        display_unit,
+        beats_per_bar,
+        display_mode,
+        display_key,
+    )
+    applications = find_next_steps(progression_in_beats)
 
-        _json_response(
-            self,
-            200,
+    suggestions: list[dict[str, Any]] = []
+    for index, app_data in enumerate(applications, start=1):
+        before_beats = [_format_token(parse_timed_chord_token(token)) for token in app_data.before]
+        replacement_beats = [_format_token(parse_timed_chord_token(token)) for token in app_data.replacement]
+        result_beats = [_format_token(parse_timed_chord_token(token)) for token in app_data.result]
+        suggestions.append(
             {
-                "base": {
-                    "beats": progression_beats,
-                    "display": base_display,
-                    "grid": _grid_for_tokens(progression_beats),
-                    "gridDisplay": _grid_for_display(progression_beats, display_mode, display_key),
+                "id": f"{app_data.rule}-{app_data.start}-{app_data.end}-{index}",
+                "rule": app_data.rule,
+                "span": [app_data.start, app_data.end],
+                "replacementSpanInResult": [app_data.start, app_data.start + len(app_data.replacement)],
+                "before": {
+                    "beats": before_beats,
+                    "display": _timed_tokens_for_unit(
+                        before_beats,
+                        display_unit,
+                        beats_per_bar,
+                        display_mode,
+                        display_key,
+                    ),
+                    "grid": _grid_for_tokens(before_beats),
+                    "gridDisplay": _grid_for_display(before_beats, display_mode, display_key),
                 },
-                "suggestions": suggestions,
-                "meta": {
-                    "notationMode": notation_mode,
-                    "durationUnit": duration_unit,
-                    "beatsPerBar": str(beats_per_bar),
-                    "displayMode": display_mode,
-                    "displayKey": display_key,
+                "replacement": {
+                    "beats": replacement_beats,
+                    "display": _timed_tokens_for_unit(
+                        replacement_beats,
+                        display_unit,
+                        beats_per_bar,
+                        display_mode,
+                        display_key,
+                    ),
+                    "grid": _grid_for_tokens(replacement_beats),
+                    "gridDisplay": _grid_for_display(
+                        replacement_beats,
+                        display_mode,
+                        display_key,
+                    ),
                 },
-            },
+                "result": {
+                    "beats": result_beats,
+                    "display": _timed_tokens_for_unit(
+                        result_beats,
+                        display_unit,
+                        beats_per_bar,
+                        display_mode,
+                        display_key,
+                    ),
+                    "grid": _grid_for_tokens(result_beats),
+                    "gridDisplay": _grid_for_display(result_beats, display_mode, display_key),
+                },
+                "summary": f"Rule {app_data.rule} on slots {app_data.start + 1}-{app_data.end}",
+            }
         )
+
+    return {
+        "base": {
+            "beats": progression_beats,
+            "display": base_display,
+            "grid": _grid_for_tokens(progression_beats),
+            "gridDisplay": _grid_for_display(progression_beats, display_mode, display_key),
+        },
+        "suggestions": suggestions,
+        "meta": {
+            "notationMode": notation_mode,
+            "durationUnit": duration_unit,
+            "beatsPerBar": str(beats_per_bar),
+            "displayMode": display_mode,
+            "displayKey": display_key,
+        },
+    }
 
 
 def main() -> None:
@@ -379,9 +368,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8001)
     args = parser.parse_args()
 
-    with ThreadingHTTPServer((args.host, args.port), JazzGrammarAPIHandler) as server:
-        print(f"Jazz Grammar API listening on http://{args.host}:{args.port}")
-        server.serve_forever()
+    uvicorn.run("backend.api_server:app", host=args.host, port=args.port, reload=False)
 
 
 if __name__ == "__main__":

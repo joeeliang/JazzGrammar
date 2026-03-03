@@ -13,7 +13,7 @@ Visualize and apply jazz chord-progression grammar rewrites in an interactive UI
 ## Repository layout
 
 - `backend/jazz_grammar.py`: grammar engine + CLI for progression expansion.
-- `backend/api_server.py`: HTTP API wrapper used by the React frontend.
+- `backend/api_server.py`: FastAPI HTTP API wrapper used by the React frontend.
 - `backend/test_jazz_grammar.py`: unit tests for parsing and rewrite behavior.
 - `frontend/`: React + Vite client application.
 - `frontend/final.html`: alternative entry HTML that also boots the React app.
@@ -22,6 +22,12 @@ Visualize and apply jazz chord-progression grammar rewrites in an interactive UI
 
 - Python 3.10+
 - Node.js 18+ and npm (for frontend)
+
+Install backend dependencies:
+
+```bash
+pip install -r backend/requirements.txt
+```
 
 ## Backend usage
 
@@ -46,7 +52,7 @@ Progression input formats:
 Run API server for frontend integration:
 
 ```bash
-python3 backend/api_server.py --host 127.0.0.1 --port 8001
+uvicorn backend.api_server:app --host 127.0.0.1 --port 8001 --reload
 ```
 
 ## Run tests
@@ -72,8 +78,28 @@ npm run dev
 
 Then open `http://127.0.0.1:5173`.
 
+## Frontend API configuration
+
+The frontend reads `VITE_API_BASE_URL`.
+
+- If unset: requests use relative paths (for example `/api/suggest`) and Vite dev proxy forwards to `http://127.0.0.1:8001`.
+- If set: requests go directly to that origin (for example `https://your-render-service.onrender.com`).
+
+Examples:
+
+```bash
+# Local development with backend on localhost:8001 (recommended default)
+unset VITE_API_BASE_URL
+
+# Local frontend hitting a remote backend
+export VITE_API_BASE_URL=https://your-render-service.onrender.com
+```
+
+For full Vercel + Render deployment instructions, see `DEPLOY_VERCEL_RENDER.md`.
+
 ## Notes
 
 - The backend currently explores depth `1` by default (`DEFAULT_SEARCH_DEPTH` in `backend/jazz_grammar.py`).
 - Progression input supports `@` duration format.
 - The frontend supports unit mode in `beats` or `bars` (bars are converted into grammar interval units internally using `beatsPerBar`).
+- Backend CORS defaults to wildcard (`*`) for easy setup. Restrict this in production when your domain is ready.

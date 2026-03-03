@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 const DEFAULT_PROGRESSION = "I@1, IV@1, V7@2";
 const KEY_OPTIONS = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").trim();
 const DEFAULT_CFG = {
   maxDepth: 6,
   layerGap: 110,
@@ -47,7 +48,11 @@ function durationInBeats(token) {
 }
 
 async function postJSON(path, payload) {
-  const response = await fetch(path, {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const url = API_BASE_URL
+    ? `${API_BASE_URL.replace(/\/+$/, "")}${normalizedPath}`
+    : normalizedPath;
+  const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
