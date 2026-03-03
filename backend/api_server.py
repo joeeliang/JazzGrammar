@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from fractions import Fraction
 import os
+from pathlib import Path
 from typing import Any, Sequence
 
 from fastapi import Body, FastAPI, HTTPException, Request
@@ -38,6 +39,34 @@ except ModuleNotFoundError:
         realize_timed_chord,
         timed_progression_to_grid_notation,
     )
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        # Keep explicit process env vars highest priority.
+        os.environ.setdefault(key, value.strip())
+
+
+def _load_local_env_files() -> None:
+    here = Path(__file__).resolve().parent
+    candidates = [
+        here / ".env.local",
+        here / ".env",
+    ]
+    for candidate in candidates:
+        _load_env_file(candidate)
+
+
+_load_local_env_files()
 
 
 def _parse_cors_origins() -> list[str]:

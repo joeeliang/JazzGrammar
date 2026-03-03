@@ -95,6 +95,11 @@ unset VITE_API_BASE_URL
 export VITE_API_BASE_URL=https://your-render-service.onrender.com
 ```
 
+Local frontend env files:
+
+- `frontend/.env.local` is ignored by git and used automatically by Vite.
+- `frontend/.env.example` is committed as a template.
+
 For full Vercel + Render deployment instructions, see `DEPLOY_VERCEL_RENDER.md`.
 
 ## Domain setup example (`joescodingadventure.com`)
@@ -148,6 +153,11 @@ When domains are stable, set Render env var `CORS_ALLOW_ORIGINS` to explicit ori
 ```text
 https://music.joescodingadventure.com
 ```
+
+Local backend env files:
+
+- `backend/.env.local` is ignored by git and auto-loaded by `backend/api_server.py` for local runs.
+- `backend/.env.example` is committed as a template.
 
 ## Notes
 
