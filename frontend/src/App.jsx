@@ -5,22 +5,19 @@ const KEY_OPTIONS = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb",
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").trim();
 const DEFAULT_CFG = {
   maxDepth: 6,
-  layerGap: 110,
-  subtreePadX: 10,
-  subtreePadY: 10,
-  labelPadX: 12,
-  labelPadY: 8,
+  layerGap: 92,
+  subtreePadX: 8,
+  subtreePadY: 6,
+  labelPadX: 10,
+  labelPadY: 6,
   collisionPadding: 12
 };
 
 const BOX_COLORS = [
-  { stroke: "#1f77b4", fill: "rgba(31, 119, 180, 0.08)" },
-  { stroke: "#2ca02c", fill: "rgba(44, 160, 44, 0.08)" },
-  { stroke: "#d62728", fill: "rgba(214, 39, 40, 0.08)" },
-  { stroke: "#ff7f0e", fill: "rgba(255, 127, 14, 0.08)" },
-  { stroke: "#17becf", fill: "rgba(23, 190, 207, 0.08)" },
-  { stroke: "#8c564b", fill: "rgba(140, 86, 75, 0.08)" },
-  { stroke: "#7f7f7f", fill: "rgba(127, 127, 127, 0.08)" }
+  { stroke: "#6f7fff", fill: "rgba(99, 116, 255, 0.12)" },
+  { stroke: "#4a76f4", fill: "rgba(74, 118, 244, 0.1)" },
+  { stroke: "#2f8ac8", fill: "rgba(47, 138, 200, 0.1)" },
+  { stroke: "#67a0f8", fill: "rgba(103, 160, 248, 0.1)" }
 ];
 
 function tokenizeProgression(progression) {
@@ -92,7 +89,7 @@ function buildChildParentMap(parentCount, childCount, applied) {
   return map;
 }
 
-function D3ProgressionDiagram({ layers, cfg, showBoxes, selectedChord, onSelectChord }) {
+function D3ProgressionDiagram({ layers, cfg, selectedChord, onSelectChord, centerSignal }) {
   const hostRef = useRef(null);
   const svgRef = useRef(null);
   const sceneRef = useRef(null);
@@ -115,6 +112,7 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes, selectedChord, onSelectC
     if (!svgRef.current || size.width <= 0 || size.height <= 0) return undefined;
     const d3 = window.d3;
     if (!d3) return undefined;
+
     if (!transformRef.current) transformRef.current = d3.zoomIdentity;
 
     const svg = d3.select(svgRef.current)
@@ -126,11 +124,10 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes, selectedChord, onSelectC
     const boxLayer = viewport.append("g");
     const edgeLayer = viewport.append("g");
     const nodeLayer = viewport.append("g");
-    const finalLayer = viewport.append("g");
     const annotationLayer = viewport.append("g");
 
     const zoomBehavior = d3.zoom()
-      .scaleExtent([0.15, 4.2])
+      .scaleExtent([0.2, 4.2])
       .filter((event) => {
         if (event.type === "wheel") return true;
         if (event.type === "dblclick") return false;
@@ -154,7 +151,16 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes, selectedChord, onSelectC
       if (event.button === 0) svg.classed("is-dragging", true);
     });
 
-    sceneRef.current = { svg, boxLayer, edgeLayer, nodeLayer, finalLayer, annotationLayer };
+    sceneRef.current = {
+      svg,
+      boxLayer,
+      edgeLayer,
+      nodeLayer,
+      annotationLayer,
+      zoomBehavior,
+      contentBounds: null
+    };
+
     return () => {
       svg.on(".zoom", null);
       svg.on("mousedown.cursor", null);
@@ -165,26 +171,34 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes, selectedChord, onSelectC
   useEffect(() => {
     if (!sceneRef.current || layers.length === 0) return;
 
-    const { svg, boxLayer, edgeLayer, nodeLayer, finalLayer, annotationLayer } = sceneRef.current;
+    const {
+      boxLayer,
+      edgeLayer,
+      nodeLayer,
+      annotationLayer
+    } = sceneRef.current;
+
     const width = size.width;
     const height = size.height;
+
     const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-    const fontPx = (kind) => (kind === "root" ? clamp(width * 0.04, 28, 54) : clamp(width * 0.03, 22, 36));
+    const fontPx = (kind) => (kind === "root" ? clamp(width * 0.018, 13, 24) : clamp(width * 0.015, 12, 18));
     const measureCanvas = document.createElement("canvas");
     const measureCtx = measureCanvas.getContext("2d");
     if (!measureCtx) return;
 
     const labelBox = (label, px) => {
-      measureCtx.font = `${px}px "Latin Modern Roman", "CMU Serif", "Times New Roman", serif`;
+      measureCtx.font = `${px}px Inter, system-ui, -apple-system, sans-serif`;
       return {
         width: measureCtx.measureText(label).width + cfg.labelPadX * 2,
-        height: px * 1.1 + cfg.labelPadY * 2
+        height: px * 1.2 + cfg.labelPadY * 2
       };
     };
 
     const visibleLayerCount = Math.min(layers.length, cfg.maxDepth + 1);
     const visibleLayers = layers.slice(0, visibleLayerCount);
     const activeLayerIndex = Math.max(0, visibleLayers.length - 1);
+
     const nodes = [];
     const edges = [];
     const brackets = [];
@@ -238,7 +252,6 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes, selectedChord, onSelectC
         node.startBeat = cursor;
         cursor += node.durationBeats;
       });
-
     });
 
     for (let layerIndex = 1; layerIndex < visibleLayers.length; layerIndex += 1) {
@@ -247,6 +260,7 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes, selectedChord, onSelectC
       const parentCount = parentLayer.length;
       const childCount = childLayer.length;
       if (parentCount === 0 || childCount === 0) continue;
+
       const applied = visibleLayers[layerIndex].applied;
       const parentMap = buildChildParentMap(parentCount, childCount, applied);
 
@@ -254,13 +268,16 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes, selectedChord, onSelectC
         const parentIndex = parentMap[childIndex];
         const parentNode = parentLayer[parentIndex];
         if (!parentNode) return;
+
         childNode.parentId = parentNode.id;
         parentNode.children.push(childNode.id);
+
         let changed = false;
         if (applied) {
           const [repStart, repEnd] = applied.replacementSpanInResult;
           changed = childIndex >= repStart && childIndex < repEnd;
         }
+
         edges.push({
           id: `e-${parentNode.id}-${childNode.id}`,
           sourceId: parentNode.id,
@@ -276,7 +293,6 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes, selectedChord, onSelectC
           brackets.push({
             id: `b-${layerIndex}`,
             layer: layerIndex - 1,
-            rule: applied.rule,
             ruleName: applied.ruleName || applied.rule,
             spanStart,
             spanEnd
@@ -285,111 +301,138 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes, selectedChord, onSelectC
       }
     }
 
-    function updateLayout() {
-      const y0 = height / 2;
-      const leftPad = clamp(width * 0.06, 45, 90);
-      const rightPad = clamp(width * 0.06, 45, 90);
+    const y0 = height / 2;
+    const leftPad = clamp(width * 0.07, 48, 96);
+    const rightPad = clamp(width * 0.07, 48, 96);
 
-      const nodeEndBeats = nodes.map((node) => node.startBeat + node.durationBeats);
-      const maxBeat = Math.max(1, ...nodeEndBeats);
-      const pxPerBeat = (width - leftPad - rightPad) / maxBeat;
+    const nodeEndBeats = nodes.map((node) => node.startBeat + node.durationBeats);
+    const maxBeat = Math.max(1, ...nodeEndBeats);
+    const pxPerBeat = (width - leftPad - rightPad) / maxBeat;
 
-      nodes.forEach((node) => {
-        const box = labelBox(node.label, fontPx(node.kind));
-        node.y = y0 + node.layer * cfg.layerGap;
-        node.left = leftPad + node.startBeat * pxPerBeat;
-        node.right = leftPad + (node.startBeat + node.durationBeats) * pxPerBeat;
-        node.bw = Math.max(8, node.right - node.left - 2);
-        node.bh = box.height + cfg.subtreePadY * 2;
-        node.x = (node.left + node.right) / 2;
-        node.bounds = {
-          left: node.x - node.bw / 2,
-          right: node.x + node.bw / 2,
-          top: node.y - node.bh / 2,
-          bottom: node.y + node.bh / 2,
-          width: node.bw,
-          height: node.bh
-        };
+    nodes.forEach((node) => {
+      const box = labelBox(node.label, fontPx(node.kind));
+      node.y = y0 + node.layer * cfg.layerGap;
+      node.left = leftPad + node.startBeat * pxPerBeat;
+      node.right = leftPad + (node.startBeat + node.durationBeats) * pxPerBeat;
+      node.bw = Math.max(8, node.right - node.left - 2);
+      node.bh = box.height + cfg.subtreePadY * 2;
+      node.x = (node.left + node.right) / 2;
+      node.bounds = {
+        left: node.x - node.bw / 2,
+        right: node.x + node.bw / 2,
+        top: node.y - node.bh / 2,
+        bottom: node.y + node.bh / 2,
+        width: node.bw,
+        height: node.bh
+      };
+    });
+
+    nodeLayer.selectAll("text.node").data(nodes, (d) => d.id).join("text")
+      .attr("class", (d) => (d.kind === "root" ? "chord node" : "tree-chord node"))
+      .text((d) => d.label)
+      .attr("x", (d) => d.x)
+      .attr("y", (d) => d.y);
+
+    edgeLayer.selectAll("line.branch").data(edges, (d) => d.id).join("line")
+      .attr("class", (d) => (d.changed ? "branch changed" : "branch"))
+      .attr("x1", (d) => byId.get(d.sourceId).x)
+      .attr("y1", (d) => byId.get(d.sourceId).y + 10)
+      .attr("x2", (d) => byId.get(d.targetId).x)
+      .attr("y2", (d) => byId.get(d.targetId).y - 15);
+
+    boxLayer.selectAll("rect.subtree-box").data(nodes, (d) => d.id).join("rect")
+      .attr("class", (d) => {
+        const isSelected = selectedChord
+          && selectedChord.layer === d.layer
+          && selectedChord.index === d.index;
+        const clickable = d.layer === activeLayerIndex;
+        return `subtree-box${clickable ? " is-clickable" : ""}${isSelected ? " is-active-selection" : ""}`;
+      })
+      .attr("stroke", (d) => BOX_COLORS[d.layer % BOX_COLORS.length].stroke)
+      .attr("fill", (d) => BOX_COLORS[d.layer % BOX_COLORS.length].fill)
+      .attr("x", (d) => d.bounds.left)
+      .attr("y", (d) => d.bounds.top)
+      .attr("width", (d) => d.bounds.width)
+      .attr("height", (d) => d.bounds.height)
+      .attr("opacity", (d) => {
+        if (selectedChord && selectedChord.layer === d.layer && selectedChord.index === d.index) return 0.94;
+        return d.layer === activeLayerIndex ? 0.58 : 0.18;
+      })
+      .on("click", (event, d) => {
+        if (d.layer !== activeLayerIndex || !onSelectChord) return;
+        event.stopPropagation();
+        onSelectChord({ layer: d.layer, index: d.index });
       });
 
+    const bracketData = brackets.map((bracket) => {
+      const layerNodes = byLayer.get(bracket.layer) || [];
+      const spanNodes = layerNodes.slice(bracket.spanStart, bracket.spanEnd);
+      if (spanNodes.length === 0) return null;
+      const leftNode = spanNodes[0];
+      const rightNode = spanNodes[spanNodes.length - 1];
+      const left = leftNode.x - leftNode.bw / 2;
+      const right = rightNode.x + rightNode.bw / 2;
+      const y = leftNode.y + 30;
+      return {
+        ...bracket,
+        left,
+        right,
+        y
+      };
+    }).filter(Boolean);
+
+    annotationLayer.selectAll("path.substitution-bracket").data(bracketData, (d) => d.id).join("path")
+      .attr("class", "substitution-bracket")
+      .attr("d", (d) => `M ${d.left} ${d.y} L ${d.left} ${d.y + 8} L ${d.right} ${d.y + 8} L ${d.right} ${d.y}`);
+
+    annotationLayer.selectAll("text.substitution-label").data(bracketData, (d) => d.id).join("text")
+      .attr("class", "substitution-label")
+      .text((d) => d.ruleName)
+      .attr("x", (d) => (d.left + d.right) / 2)
+      .attr("y", (d) => d.y + 23);
+
+    if (nodes.length > 0) {
+      sceneRef.current.contentBounds = {
+        left: Math.min(...nodes.map((node) => node.bounds.left)),
+        right: Math.max(...nodes.map((node) => node.bounds.right)),
+        top: Math.min(...nodes.map((node) => node.bounds.top)),
+        bottom: Math.max(...nodes.map((node) => node.bounds.bottom))
+      };
     }
+  }, [cfg, layers, onSelectChord, selectedChord, size.height, size.width]);
 
-    function renderD3() {
-      nodeLayer.selectAll("text.node").data(nodes, (d) => d.id).join("text")
-        .attr("class", (d) => (d.kind === "root" ? "chord node" : "tree-chord node"))
-        .text((d) => d.label)
-        .attr("x", (d) => d.x)
-        .attr("y", (d) => d.y);
+  useEffect(() => {
+    if (!sceneRef.current?.contentBounds || size.width <= 0 || size.height <= 0) return;
+    const d3 = window.d3;
+    if (!d3) return;
 
-      edgeLayer.selectAll("line.branch").data(edges, (d) => d.id).join("line")
-        .attr("class", (d) => (d.changed ? "branch changed" : "branch"))
-        .attr("x1", (d) => byId.get(d.sourceId).x)
-        .attr("y1", (d) => byId.get(d.sourceId).y + 12)
-        .attr("x2", (d) => byId.get(d.targetId).x)
-        .attr("y2", (d) => byId.get(d.targetId).y - 18);
+    const { svg, zoomBehavior, contentBounds } = sceneRef.current;
 
-      boxLayer.selectAll("rect.subtree-box").data(nodes, (d) => d.id).join("rect")
-        .attr("class", (d) => {
-          const isSelected = selectedChord
-            && selectedChord.layer === d.layer
-            && selectedChord.index === d.index;
-          const clickable = showBoxes && d.layer === activeLayerIndex;
-          return `subtree-box${clickable ? " is-clickable" : ""}${isSelected ? " is-active-selection" : ""}`;
-        })
-        .attr("stroke", (d) => BOX_COLORS[d.layer % BOX_COLORS.length].stroke)
-        .attr("fill", (d) => BOX_COLORS[d.layer % BOX_COLORS.length].fill)
-        .attr("x", (d) => d.bounds.left)
-        .attr("y", (d) => d.bounds.top)
-        .attr("width", (d) => d.bounds.width)
-        .attr("height", (d) => d.bounds.height)
-        .attr("opacity", (d) => {
-          if (!showBoxes) return 0;
-          if (selectedChord && selectedChord.layer === d.layer && selectedChord.index === d.index) return 1;
-          return d.layer === activeLayerIndex ? 0.92 : 0.42;
-        })
-        .on("click", (event, d) => {
-          if (!showBoxes || d.layer !== activeLayerIndex || !onSelectChord) return;
-          event.stopPropagation();
-          onSelectChord({ layer: d.layer, index: d.index });
-        });
+    const pad = 52;
+    const contentWidth = Math.max(1, contentBounds.right - contentBounds.left);
+    const contentHeight = Math.max(1, contentBounds.bottom - contentBounds.top);
 
-      finalLayer.selectAll("*").remove();
+    const scale = Math.min(
+      1.35,
+      Math.max(
+        0.28,
+        Math.min(
+          (size.width - pad * 2) / contentWidth,
+          (size.height - pad * 2) / contentHeight
+        )
+      )
+    );
 
-      const bracketData = brackets.map((bracket) => {
-        const layerNodes = byLayer.get(bracket.layer) || [];
-        const spanNodes = layerNodes.slice(bracket.spanStart, bracket.spanEnd);
-        if (spanNodes.length === 0) return null;
-        const leftNode = spanNodes[0];
-        const rightNode = spanNodes[spanNodes.length - 1];
-        const left = leftNode.x - leftNode.bw / 2;
-        const right = rightNode.x + rightNode.bw / 2;
-        const y = leftNode.y + 34;
-        return {
-          ...bracket,
-          left,
-          right,
-          y
-        };
-      }).filter(Boolean);
+    const tx = (size.width - contentWidth * scale) / 2 - contentBounds.left * scale;
+    const ty = (size.height - contentHeight * scale) / 2 - contentBounds.top * scale;
+    const target = d3.zoomIdentity.translate(tx, ty).scale(scale);
 
-      annotationLayer.selectAll("path.substitution-bracket").data(bracketData, (d) => d.id).join("path")
-        .attr("class", "substitution-bracket")
-        .attr("d", (d) => `M ${d.left} ${d.y} L ${d.left} ${d.y + 8} L ${d.right} ${d.y + 8} L ${d.right} ${d.y}`);
-
-      annotationLayer.selectAll("text.substitution-label").data(bracketData, (d) => d.id).join("text")
-        .attr("class", "substitution-label")
-        .text((d) => d.ruleName)
-        .attr("x", (d) => (d.left + d.right) / 2)
-        .attr("y", (d) => d.y + 24);
-
-    }
-
-    updateLayout();
-    renderD3();
-  }, [cfg, layers, onSelectChord, selectedChord, showBoxes, size.height, size.width]);
+    transformRef.current = target;
+    svg.transition().duration(260).call(zoomBehavior.transform, target);
+  }, [centerSignal, layers.length, size.height, size.width]);
 
   return (
-    <div ref={hostRef} id="notes-display">
+    <div ref={hostRef} className="notes-display" onClick={() => onSelectChord(null)}>
       <svg ref={svgRef} />
     </div>
   );
@@ -397,12 +440,14 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes, selectedChord, onSelectC
 
 export default function App() {
   const initialDisplay = tokenizeProgression(DEFAULT_PROGRESSION);
+
   const [progressionInput, setProgressionInput] = useState(DEFAULT_PROGRESSION);
   const [notationMode, setNotationMode] = useState("duration");
   const [durationUnit, setDurationUnit] = useState("beats");
   const [beatsPerBar, setBeatsPerBar] = useState("4");
   const [displayMode, setDisplayMode] = useState("roman");
   const [displayKey, setDisplayKey] = useState("C");
+
   const [layers, setLayers] = useState([
     {
       id: "layer-0",
@@ -413,17 +458,20 @@ export default function App() {
       applied: null
     }
   ]);
+
   const [suggestions, setSuggestions] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("Default progression loaded. Click Start to fetch backend suggestions.");
   const [selectedSuggestionId, setSelectedSuggestionId] = useState("");
   const [selectedChord, setSelectedChord] = useState(null);
-  const [showBoxes, setShowBoxes] = useState(true);
-  const [cfg, setCfg] = useState(DEFAULT_CFG);
+
+  const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(true);
+  const [centerSignal, setCenterSignal] = useState(0);
 
   const currentLayer = layers.length > 0 ? layers[layers.length - 1] : null;
   const currentLayerIndex = Math.max(0, layers.length - 1);
+
   const filteredSuggestions = useMemo(() => {
     if (!selectedChord || selectedChord.layer !== currentLayerIndex) {
       return suggestions;
@@ -432,6 +480,7 @@ export default function App() {
       selectedChord.index >= suggestion.span[0] && selectedChord.index < suggestion.span[1]
     ));
   }, [currentLayerIndex, selectedChord, suggestions]);
+
   const suggestionCountLabel = useMemo(() => {
     const count = filteredSuggestions.length;
     if (selectedChord && selectedChord.layer === currentLayerIndex) {
@@ -441,9 +490,28 @@ export default function App() {
     return `${count} suggestions`;
   }, [currentLayerIndex, filteredSuggestions.length, selectedChord, suggestions.length]);
 
+  const selectedChordLabel = useMemo(() => {
+    if (!selectedChord || selectedChord.layer !== currentLayerIndex || !currentLayer) {
+      return "All chords";
+    }
+    const token = currentLayer.progressionDisplay[selectedChord.index]
+      || currentLayer.progressionBeats[selectedChord.index]
+      || "";
+    return chordLabel(token) || `Chord ${selectedChord.index + 1}`;
+  }, [currentLayer, currentLayerIndex, selectedChord]);
+
   useEffect(() => {
     setSelectedChord(null);
   }, [currentLayerIndex]);
+
+  useEffect(() => {
+    setCenterSignal((prev) => prev + 1);
+  }, [layers.length]);
+
+  useEffect(() => {
+    if (!isSuggestionsOpen) return;
+    setCenterSignal((prev) => prev + 1);
+  }, [isSuggestionsOpen]);
 
   function handleSelectChord(nextSelection) {
     if (!nextSelection) {
@@ -562,6 +630,7 @@ export default function App() {
       const parseResponse = await postJSON("/api/parse", requestPayload(progressionInput, "auto"));
       const parsedMode = parseResponse.meta?.notationMode || notationMode;
       setNotationMode(parsedMode);
+
       const root = {
         id: "layer-0",
         progressionBeats: parseResponse.progression.beats,
@@ -570,8 +639,10 @@ export default function App() {
         progressionGridDisplay: parseResponse.progression.gridDisplay || parseResponse.progression.grid,
         applied: null
       };
+
       setLayers([root]);
       await refreshSuggestions(root.progressionBeats.join(", "), "duration");
+
       if (parsedMode === "grid") {
         setProgressionInput(root.progressionGrid || progressionInput);
       } else {
@@ -630,241 +701,162 @@ export default function App() {
     }
   }
 
-  function updateCfg(key, value) {
-    setCfg((prev) => ({ ...prev, [key]: value }));
-  }
-
   return (
     <div className="app-shell">
-      <aside className="left-panel ui-panel">
-        <h1>Jazz Grammar Explorer</h1>
-        <p className="subtitle">Click a current-layer box to focus options by chord span.</p>
+      <header className="topbar">
+        <div className="brand">Jazz Grammar Explorer</div>
 
-        <label className="field-label" htmlFor="progression-input">Progression input (@ durations or chord grid)</label>
-        <textarea
-          id="progression-input"
-          value={progressionInput}
-          onChange={(event) => setProgressionInput(event.target.value)}
-          rows={4}
-          placeholder={"I@1, IV@1, V7@2\nor\n| I / I,ii / ii / ii |"}
-        />
-
-        <div className="row">
-          <label className="field-label" htmlFor="duration-unit">Unit</label>
-          <select
-            id="duration-unit"
-            value={durationUnit}
-            onChange={(event) => setDurationUnit(event.target.value)}
-          >
-            <option value="beats">Beats</option>
-            <option value="bars">Bars</option>
-          </select>
-        </div>
-
-        <div className="row">
-          <label className="field-label" htmlFor="beats-per-bar">Beats per bar</label>
-          <input
-            id="beats-per-bar"
-            type="number"
-            min="1"
-            step="0.5"
-            value={beatsPerBar}
-            onChange={(event) => setBeatsPerBar(event.target.value)}
-          />
-        </div>
-
-        <div className="row">
-          <label className="field-label" htmlFor="display-mode">Display</label>
-          <select
-            id="display-mode"
-            value={displayMode}
-            onChange={(event) => handleDisplayModeChange(event.target.value)}
-          >
-            <option value="roman">Roman numerals</option>
-            <option value="key">Realized key</option>
-          </select>
-        </div>
-
-        <div className="row">
-          <label className="field-label" htmlFor="display-key">Key</label>
-          <select
-            id="display-key"
-            value={displayKey}
-            onChange={(event) => handleDisplayKeyChange(event.target.value)}
-            disabled={busy || displayMode === "roman"}
-          >
-            {KEY_OPTIONS.map((keyName) => (
-              <option key={keyName} value={keyName}>{keyName}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="button-row">
-          <button type="button" onClick={handleStart} disabled={busy}>Start</button>
-          <button type="button" onClick={handleRefreshSuggestions} disabled={busy || !currentLayer}>Refresh</button>
-        </div>
-
-        {error ? <p className="status error">{error}</p> : <p className="status">{info}</p>}
-
-        <div className="suggestions-head">
-          <strong>Options</strong>
-          <span>{suggestionCountLabel}</span>
-        </div>
-        <div className="suggestions-list">
-          {suggestions.length === 0 ? (
-            <div className="empty">No suggestions yet.</div>
-          ) : filteredSuggestions.length === 0 ? (
-            <div className="empty">No suggestions for the selected chord.</div>
-          ) : (
-            filteredSuggestions.map((suggestion) => {
-              const isSelected = selectedSuggestionId === suggestion.id;
-              return (
-                <button
-                  className={isSelected ? "suggestion is-selected" : "suggestion"}
-                  key={suggestion.id}
-                  type="button"
-                  onClick={() => {
-                    setSelectedSuggestionId(suggestion.id);
-                    handleApplySuggestion(suggestion);
-                  }}
-                  disabled={busy}
-                >
-                  <span className="suggestion-title">{suggestion.summary}</span>
-                  <span className="suggestion-body">
-                    {suggestion.before.display.join(" | ")} {"->"} {suggestion.result.display.join(" | ")}
-                  </span>
-                </button>
-              );
-            })
-          )}
-        </div>
-      </aside>
-
-      <main className="canvas-shell">
-        <D3ProgressionDiagram
-          layers={layers}
-          cfg={cfg}
-          showBoxes={showBoxes}
-          selectedChord={selectedChord}
-          onSelectChord={handleSelectChord}
-        />
-
-        <aside id="controls" className="ui-panel" aria-label="Layout controls">
-          <h2>Tuning</h2>
-          <div className="toggle-row">
+        <div className="top-controls">
+          <label className="top-field top-field-progression" htmlFor="progression-input">
+            <span>Progression:</span>
             <input
-              id="toggle-boxes"
-              type="checkbox"
-              checked={showBoxes}
-              onChange={(event) => setShowBoxes(event.target.checked)}
+              id="progression-input"
+              value={progressionInput}
+              onChange={(event) => setProgressionInput(event.target.value)}
+              placeholder="I@1, IV@1, V7@2"
             />
-            <label htmlFor="toggle-boxes">Show bounding boxes</label>
-          </div>
+          </label>
 
-          <div className="slider-row">
-            <label htmlFor="max-depth">Max depth</label>
-            <span id="max-depth-value" className="slider-value">{cfg.maxDepth}</span>
+          <label className="top-field" htmlFor="display-key">
+            <span>Key:</span>
+            <select
+              id="display-key"
+              value={displayKey}
+              onChange={(event) => handleDisplayKeyChange(event.target.value)}
+              disabled={busy || displayMode === "roman"}
+            >
+              {KEY_OPTIONS.map((keyName) => (
+                <option key={keyName} value={keyName}>{keyName}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="top-field" htmlFor="beats-per-bar">
+            <span>Beats:</span>
             <input
-              id="max-depth"
-              type="range"
+              id="beats-per-bar"
+              type="number"
               min="1"
-              max="10"
-              step="1"
-              value={cfg.maxDepth}
-              onChange={(event) => updateCfg("maxDepth", Number(event.target.value))}
+              step="0.5"
+              value={beatsPerBar}
+              onChange={(event) => setBeatsPerBar(event.target.value)}
             />
-          </div>
+          </label>
 
-          <div className="slider-row">
-            <label htmlFor="layer-gap">Layer gap</label>
-            <span id="layer-gap-value" className="slider-value">{cfg.layerGap}px</span>
-            <input
-              id="layer-gap"
-              type="range"
-              min="50"
-              max="240"
-              step="1"
-              value={cfg.layerGap}
-              onChange={(event) => updateCfg("layerGap", Number(event.target.value))}
-            />
-          </div>
+          <label className="top-field" htmlFor="display-mode">
+            <span>Display:</span>
+            <select
+              id="display-mode"
+              value={displayMode}
+              onChange={(event) => handleDisplayModeChange(event.target.value)}
+            >
+              <option value="roman">Roman numerals</option>
+              <option value="key">Realized key</option>
+            </select>
+          </label>
 
-          <div className="slider-row">
-            <label htmlFor="collision-padding">Sibling gap</label>
-            <span id="collision-padding-value" className="slider-value">{cfg.collisionPadding}px</span>
-            <input
-              id="collision-padding"
-              type="range"
-              min="0"
-              max="90"
-              step="1"
-              value={cfg.collisionPadding}
-              onChange={(event) => updateCfg("collisionPadding", Number(event.target.value))}
-            />
-          </div>
+          <label className="top-field" htmlFor="duration-unit">
+            <span>Unit:</span>
+            <select
+              id="duration-unit"
+              value={durationUnit}
+              onChange={(event) => setDurationUnit(event.target.value)}
+            >
+              <option value="beats">Beats</option>
+              <option value="bars">Bars</option>
+            </select>
+          </label>
+        </div>
 
-          <div className="slider-row">
-            <label htmlFor="subtree-pad-x">Box pad X</label>
-            <span id="subtree-pad-x-value" className="slider-value">{cfg.subtreePadX}px</span>
-            <input
-              id="subtree-pad-x"
-              type="range"
-              min="0"
-              max="70"
-              step="1"
-              value={cfg.subtreePadX}
-              onChange={(event) => updateCfg("subtreePadX", Number(event.target.value))}
-            />
-          </div>
+        <div className="top-actions">
+          <button type="button" className="btn-primary" onClick={handleStart} disabled={busy}>Start</button>
+          <button type="button" className="btn-secondary" onClick={handleRefreshSuggestions} disabled={busy || !currentLayer}>Refresh</button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setIsSuggestionsOpen((prev) => !prev)}
+          >
+            {isSuggestionsOpen ? "Hide" : "Show"} suggestions
+          </button>
+        </div>
+      </header>
 
-          <div className="slider-row">
-            <label htmlFor="subtree-pad-y">Box pad Y</label>
-            <span id="subtree-pad-y-value" className="slider-value">{cfg.subtreePadY}px</span>
-            <input
-              id="subtree-pad-y"
-              type="range"
-              min="0"
-              max="70"
-              step="1"
-              value={cfg.subtreePadY}
-              onChange={(event) => updateCfg("subtreePadY", Number(event.target.value))}
-            />
-          </div>
+      <div className="workspace">
+        <main className="canvas-shell" aria-label="Chord progression tree view">
+          <D3ProgressionDiagram
+            layers={layers}
+            cfg={DEFAULT_CFG}
+            selectedChord={selectedChord}
+            onSelectChord={handleSelectChord}
+            centerSignal={centerSignal}
+          />
+        </main>
 
-          <div className="slider-row">
-            <label htmlFor="label-pad-x">Text pad X</label>
-            <span id="label-pad-x-value" className="slider-value">{cfg.labelPadX}px</span>
-            <input
-              id="label-pad-x"
-              type="range"
-              min="0"
-              max="60"
-              step="1"
-              value={cfg.labelPadX}
-              onChange={(event) => updateCfg("labelPadX", Number(event.target.value))}
-            />
-          </div>
+        {isSuggestionsOpen && (
+          <aside className="suggestions-sidebar" aria-label="Chord suggestions">
+            <div className="sidebar-header">
+              <h2>Chord Suggestions</h2>
+              <button
+                type="button"
+                className="icon-close"
+                aria-label="Hide suggestions panel"
+                onClick={() => setIsSuggestionsOpen(false)}
+              >
+                ×
+              </button>
+            </div>
 
-          <div className="slider-row">
-            <label htmlFor="label-pad-y">Text pad Y</label>
-            <span id="label-pad-y-value" className="slider-value">{cfg.labelPadY}px</span>
-            <input
-              id="label-pad-y"
-              type="range"
-              min="0"
-              max="60"
-              step="1"
-              value={cfg.labelPadY}
-              onChange={(event) => updateCfg("labelPadY", Number(event.target.value))}
-            />
-          </div>
-        </aside>
+            <div className="sidebar-content">
+              <section className="sidebar-section">
+                <p className="section-label">Selected chord</p>
+                <p className="section-value">{selectedChordLabel}</p>
+              </section>
 
-        <aside id="grid-output" className="ui-panel" aria-label="Generated chord grid output">
-          <h2>Generated Chord Grid</h2>
-          <pre>{currentLayer?.progressionGridDisplay || "Run Start to render grid notation."}</pre>
-        </aside>
-      </main>
+              <section className="sidebar-section sidebar-status">
+                <div className="section-head-row">
+                  <strong>Available options</strong>
+                  <span>{suggestionCountLabel}</span>
+                </div>
+
+                {error ? (
+                  <div className="status-card error">{error}</div>
+                ) : (
+                  <div className="status-card">{info}</div>
+                )}
+              </section>
+
+              <section className="sidebar-section sidebar-list">
+                {suggestions.length === 0 ? (
+                  <div className="empty">No suggestions yet.</div>
+                ) : filteredSuggestions.length === 0 ? (
+                  <div className="empty">No suggestions for the selected chord.</div>
+                ) : (
+                  filteredSuggestions.map((suggestion) => {
+                    const isSelected = selectedSuggestionId === suggestion.id;
+                    return (
+                      <button
+                        className={isSelected ? "suggestion is-selected" : "suggestion"}
+                        key={suggestion.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedSuggestionId(suggestion.id);
+                          handleApplySuggestion(suggestion);
+                        }}
+                        disabled={busy}
+                      >
+                        <span className="suggestion-title">{suggestion.summary}</span>
+                        <span className="suggestion-body">
+                          {suggestion.before.display.join(" | ")} {"->"} {suggestion.result.display.join(" | ")}
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </section>
+            </div>
+          </aside>
+        )}
+      </div>
     </div>
   );
 }
