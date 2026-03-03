@@ -97,6 +97,58 @@ export VITE_API_BASE_URL=https://your-render-service.onrender.com
 
 For full Vercel + Render deployment instructions, see `DEPLOY_VERCEL_RENDER.md`.
 
+## Domain setup example (`joescodingadventure.com`)
+
+If you already own `joescodingadventure.com`, this is the clean setup:
+
+- Frontend on Vercel: `music.joescodingadventure.com`
+- Backend on Render: `api.joescodingadventure.com`
+- Frontend env var on Vercel: `VITE_API_BASE_URL=https://api.joescodingadventure.com`
+
+### Recommended DNS pattern (separate frontend/backend subdomains)
+
+1. Create the backend service on Render first and deploy it.
+2. In Render, add custom domain `api.joescodingadventure.com` to your web service.
+3. In your DNS provider, create the DNS record Render asks for (Render shows exact type/name/value in UI).
+4. Wait for Render domain verification and SSL certificate issuance.
+5. In Vercel, add custom domain `music.joescodingadventure.com` to your frontend project.
+6. In your DNS provider, create the DNS record Vercel asks for (Vercel shows exact type/name/value in UI).
+7. In Vercel project environment variables, set:
+   `VITE_API_BASE_URL=https://api.joescodingadventure.com`
+8. Redeploy frontend after setting env vars.
+
+### Alternate pattern (single frontend domain + separate backend domain)
+
+You can keep:
+
+- Frontend: `music.joescodingadventure.com`
+- Backend: Render default URL (for example `https://your-service.onrender.com`)
+
+Then set:
+
+- `VITE_API_BASE_URL=https://your-service.onrender.com`
+
+This works immediately, but a custom API subdomain looks cleaner and is easier to lock down with CORS later.
+
+### About “same domain for frontend and backend”
+
+If by “same domain” you mean only one hostname (`music.joescodingadventure.com`) serving both UI and `/api/*`,
+you need an extra proxy/CDN layer that can route path `/api/*` to Render and everything else to Vercel.
+
+Without that proxy layer, use separate hostnames:
+
+- `music.joescodingadventure.com` for frontend
+- `api.joescodingadventure.com` for backend
+
+### CORS reminder for production
+
+Current backend default is wildcard CORS (`*`) for easy setup.
+When domains are stable, set Render env var `CORS_ALLOW_ORIGINS` to explicit origins, for example:
+
+```text
+https://music.joescodingadventure.com
+```
+
 ## Notes
 
 - The backend currently explores depth `1` by default (`DEFAULT_SEARCH_DEPTH` in `backend/jazz_grammar.py`).
