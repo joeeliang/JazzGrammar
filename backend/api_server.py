@@ -327,6 +327,9 @@ async def suggest(payload: dict[str, Any] | None = Body(default=None)) -> dict[s
             {
                 "id": f"{app_data.rule}-{app_data.start}-{app_data.end}-{index}",
                 "rule": app_data.rule,
+                "ruleName": app_data.rule_name,
+                "productionRule": app_data.production_rule,
+                "description": app_data.description,
                 "span": [app_data.start, app_data.end],
                 "replacementSpanInResult": [app_data.start, app_data.start + len(app_data.replacement)],
                 "before": {
@@ -369,7 +372,7 @@ async def suggest(payload: dict[str, Any] | None = Body(default=None)) -> dict[s
                     "grid": _grid_for_tokens(result_beats),
                     "gridDisplay": _grid_for_display(result_beats, display_mode, display_key),
                 },
-                "summary": f"Rule {app_data.rule} on slots {app_data.start + 1}-{app_data.end}",
+                "summary": f"{app_data.rule_name}: {' | '.join(before_beats)} -> {' | '.join(replacement_beats)}",
             }
         )
 

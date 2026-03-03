@@ -4,7 +4,7 @@ Visualize and apply jazz chord-progression grammar rewrites in an interactive UI
 
 ## What this project does
 
-- Expands Roman-numeral chord progressions with Steedman-style rewrite rules (rules 1-6, rule 0 excluded).
+- Expands Roman-numeral chord progressions with named generative jazz-grammar transformations.
 - Tracks and preserves chord durations during rewrites.
 - Generates next-generation progression sequences from a starting progression.
 - Exposes a local API for parse/suggest operations.

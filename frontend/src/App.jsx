@@ -276,6 +276,7 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
             id: `b-${layerIndex}`,
             layer: layerIndex - 1,
             rule: applied.rule,
+            ruleName: applied.ruleName || applied.rule,
             spanStart,
             spanEnd
           });
@@ -361,7 +362,7 @@ function D3ProgressionDiagram({ layers, cfg, showBoxes }) {
 
       annotationLayer.selectAll("text.substitution-label").data(bracketData, (d) => d.id).join("text")
         .attr("class", "substitution-label")
-        .text((d) => `Rule ${d.rule}`)
+        .text((d) => d.ruleName)
         .attr("x", (d) => (d.left + d.right) / 2)
         .attr("y", (d) => d.y + 24);
 
@@ -562,6 +563,7 @@ export default function App() {
         progressionGridDisplay: suggestion.result.gridDisplay || suggestion.result.grid,
         applied: {
           rule: suggestion.rule,
+          ruleName: suggestion.ruleName || suggestion.rule,
           span: suggestion.span,
           replacementSpanInResult: suggestion.replacementSpanInResult
         }
@@ -589,7 +591,7 @@ export default function App() {
     <div className="app-shell">
       <aside className="left-panel ui-panel">
         <h1>Jazz Grammar Explorer</h1>
-        <p className="subtitle">Rule-driven suggestions from backend grammar rewrites.</p>
+        <p className="subtitle">Transformation-driven suggestions from backend grammar rewrites.</p>
 
         <label className="field-label" htmlFor="progression-input">Progression input (@ durations or chord grid)</label>
         <textarea

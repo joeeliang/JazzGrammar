@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Steedman-style jazz grammar rewrite engine (rules 1-6, excluding rule 0).
+"""Duration-aware jazz grammar rewrite engine with named transformations.
 
-This version is duration-aware:
-- Each chord can carry a duration in "time interval units".
-- Split rules (1, 2) divide a matched chord into two equal durations.
-- Substitution rules (3a, 3b, 4, 5, 6) preserve durations of replaced slots.
+The engine stores chords in Roman-numeral space and applies transformation
+productions directly on those symbols while preserving timing.
 """
 
 from __future__ import annotations
@@ -83,16 +81,21 @@ class Chord:
     root: Root
     minor: bool = False
     dominant7: bool = False
+    diminished: bool = False
     diminished7: bool = False
 
     def __post_init__(self) -> None:
-        if self.diminished7 and (self.minor or self.dominant7):
-            raise ValueError("Diminished seventh cannot be combined with m/7 flags.")
+        if self.diminished7 and (self.minor or self.dominant7 or self.diminished):
+            raise ValueError("Diminished seventh cannot be combined with other quality flags.")
+        if self.diminished and (self.minor or self.dominant7 or self.diminished7):
+            raise ValueError("Diminished triad cannot be combined with other quality flags.")
 
     def to_token(self) -> str:
         base = self.root.to_token()
         if self.diminished7:
             return f"{base}°7"
+        if self.diminished:
+            return f"{base}°"
         if self.dominant7:
             return f"{base}m7" if self.minor else f"{base}7"
         if self.minor:
@@ -100,16 +103,19 @@ class Chord:
         return base
 
     def is_plain(self) -> bool:
-        return not self.diminished7 and not self.dominant7
+        return not self.diminished and not self.diminished7 and not self.dominant7
 
     def is_plain_major(self) -> bool:
         return self.is_plain() and not self.minor
 
     def is_major_dom7(self) -> bool:
-        return self.dominant7 and not self.minor and not self.diminished7
+        return self.dominant7 and not self.minor and not self.diminished and not self.diminished7
 
     def is_minor_dom7(self) -> bool:
-        return self.dominant7 and self.minor and not self.diminished7
+        return self.dominant7 and self.minor and not self.diminished and not self.diminished7
+
+    def is_diminished(self) -> bool:
+        return self.diminished or self.diminished7
 
 
 def format_duration(duration: Fraction) -> str:
@@ -157,6 +163,9 @@ class TimedChord:
 @dataclass(frozen=True)
 class RuleApplication:
     rule: str
+    rule_name: str
+    production_rule: str
+    description: str
     start: int  # inclusive, 0-based
     end: int  # exclusive, 0-based
     before: tuple[str, ...]
@@ -183,6 +192,8 @@ def parse_chord(token: str) -> Chord:
 
     if normalized.endswith("°7"):
         return Chord(root=parse_root(normalized[:-2]), diminished7=True)
+    if normalized.endswith("°"):
+        return Chord(root=parse_root(normalized[:-1]), diminished=True)
     if normalized.endswith("m7"):
         return Chord(root=parse_root(normalized[:-2]), minor=True, dominant7=True)
     if normalized.endswith("7"):
@@ -430,6 +441,8 @@ def realize_chord(chord: Chord, key: str) -> str:
     root_name = semitone_to_note_name(chord_root, prefer_flats=key_prefers_flats(key))
     if chord.diminished7:
         return f"{root_name}°7"
+    if chord.diminished:
+        return f"{root_name}°"
     if chord.dominant7:
         return f"{root_name}m7" if chord.minor else f"{root_name}7"
     if chord.minor:
@@ -521,208 +534,558 @@ def format_result_with_replacement_span(app: RuleApplication) -> str:
     return " / ".join(tokens)
 
 
-def rule_1(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
-    # Rule 1: x(m)(7) -> x(m) x(m)(7)
+@dataclass(frozen=True)
+class TransformationMeta:
+    key: str
+    name: str
+    production_rule: str
+    description: str
+
+
+def _is_root(root: Root, roman: str, accidental: int = 0) -> bool:
+    return root.degree == ROMAN_TO_DEGREE[roman] and root.accidental == accidental
+
+
+def _split_duration_pair(timed: TimedChord) -> tuple[Fraction, Fraction]:
+    half = timed.duration / 2
+    return half, half
+
+
+def _diatonic_chord_for_root(root: Root) -> Chord:
+    if root.degree in {ROMAN_TO_DEGREE["II"], ROMAN_TO_DEGREE["III"], ROMAN_TO_DEGREE["VI"]}:
+        return Chord(root=root, minor=True)
+    if root.degree == ROMAN_TO_DEGREE["VII"]:
+        return Chord(root=root, diminished=True)
+    return Chord(root=root)
+
+
+def _rule_application(
+    meta: TransformationMeta,
+    seq: Sequence[TimedChord],
+    *,
+    start: int,
+    end: int,
+    replacement: Sequence[TimedChord],
+    assumption: str | None = None,
+) -> RuleApplication:
+    result = replace_span(seq, start, end, replacement)
+    return RuleApplication(
+        rule=meta.key,
+        rule_name=meta.name,
+        production_rule=meta.production_rule,
+        description=meta.description,
+        start=start,
+        end=end,
+        before=timed_chord_tokens(seq[start:end]),
+        replacement=timed_chord_tokens(replacement),
+        result=timed_chord_tokens(result),
+        assumption=assumption,
+    )
+
+
+TRANSFORMATION_DUPLICATION = TransformationMeta(
+    key="duplication_prolongation",
+    name="Duplication (prolongation)",
+    production_rule="X -> X X",
+    description="Splits one chord into two equal-duration copies to prolong the same harmony.",
+)
+TRANSFORMATION_DESCENDING_FIFTHS_DIATONIC = TransformationMeta(
+    key="descending_fifths_diatonic_chain",
+    name="Descending-fifths / diatonic chain",
+    production_rule="X -> Δ/X X",
+    description="Prepends the diatonic descending-fifth predecessor of the target harmony.",
+)
+TRANSFORMATION_SUBDOMINANT_PREPARES_DOMINANT = TransformationMeta(
+    key="subdominant_prepares_dominant",
+    name="Subdominant prepares dominant",
+    production_rule="V -> IV V",
+    description="Expands a dominant-function chord with a preceding subdominant.",
+)
+TRANSFORMATION_CHROMATIC_SUBMEDIANT_PREPARES_DOMINANT = TransformationMeta(
+    key="chromatic_submediant_prepares_dominant",
+    name="Chromatic submediant prepares dominant",
+    production_rule="V -> ♭VI V",
+    description="Uses ♭VI as chromatic predominant material before V.",
+)
+TRANSFORMATION_DIMINISHED_PREPARES_TARGET = TransformationMeta(
+    key="diminished_prepares_target",
+    name="Diminished prepares target",
+    production_rule="X -> vii°/X X",
+    description="Introduces a leading-tone diminished triad that resolves into the target chord.",
+)
+TRANSFORMATION_APPLIED_DOMINANT = TransformationMeta(
+    key="applied_dominant_secondary_dominant",
+    name="Applied dominant (secondary dominant)",
+    production_rule="X -> V/X X",
+    description="Adds the dominant seventh of the upcoming chord before that target.",
+)
+TRANSFORMATION_APPLIED_LEADING_TONE = TransformationMeta(
+    key="applied_leading_tone_secondary_vii_dim",
+    name="Applied leading-tone (secondary vii°)",
+    production_rule="X -> vii°/X X",
+    description="Adds a secondary leading-tone diminished seventh before the target chord.",
+)
+TRANSFORMATION_NEAPOLITAN_PREPARES_DOMINANT = TransformationMeta(
+    key="neapolitan_prepares_dominant",
+    name="Neapolitan prepares dominant",
+    production_rule="V -> ♭II V",
+    description="Uses a Neapolitan predominant color before V.",
+)
+TRANSFORMATION_PLAGAL_EXPANSION = TransformationMeta(
+    key="plagal_expansion",
+    name="Plagal expansion",
+    production_rule="I -> IV I",
+    description="Expands tonic with a plagal IV approach.",
+)
+TRANSFORMATION_BACKDOOR_DOMINANT_EXPANSION = TransformationMeta(
+    key="backdoor_dominant_expansion",
+    name="Backdoor dominant expansion",
+    production_rule="I -> ♭VII7 I",
+    description="Uses ♭VII7 as a backdoor dominant into tonic.",
+)
+TRANSFORMATION_TRITONE_SUBSTITUTION = TransformationMeta(
+    key="tritone_substitution",
+    name="Tritone substitution",
+    production_rule="V7 -> ♭II7",
+    description="Substitutes V7 with its tritone-related dominant seventh.",
+)
+TRANSFORMATION_DOMINANT_DIMINISHED_EQUIVALENCE = TransformationMeta(
+    key="dominant_diminished_equivalence",
+    name="Dominant-diminished equivalence",
+    production_rule="V7 -> vii°",
+    description="Reinterprets V7 as a leading-tone diminished sonority.",
+)
+TRANSFORMATION_COMMON_TONE_DIMINISHED_EXPANSION = TransformationMeta(
+    key="common_tone_diminished_expansion",
+    name="Common-tone diminished expansion",
+    production_rule="X -> X°7 X",
+    description="Places a common-tone diminished seventh before the original harmony.",
+)
+TRANSFORMATION_CHROMATIC_MEDIANT_TO_FLAT_III = TransformationMeta(
+    key="chromatic_mediant_substitution_to_flat_iii",
+    name="Chromatic mediant substitution (to ♭III)",
+    production_rule="I -> ♭III",
+    description="Recolors tonic with its flat chromatic mediant substitute.",
+)
+TRANSFORMATION_CHROMATIC_MEDIANT_TO_III = TransformationMeta(
+    key="chromatic_mediant_substitution_to_iii",
+    name="Chromatic mediant substitution (to III)",
+    production_rule="I -> III",
+    description="Recolors tonic with its raised chromatic mediant substitute.",
+)
+TRANSFORMATION_CHROMATIC_MEDIANT_TO_FLAT_VI = TransformationMeta(
+    key="chromatic_mediant_substitution_to_flat_vi",
+    name="Chromatic mediant substitution (to ♭VI)",
+    production_rule="I -> ♭VI",
+    description="Recolors tonic with its flat-submediant chromatic mediant substitute.",
+)
+TRANSFORMATION_DESCENDING_FIFTHS_RECURSIVE = TransformationMeta(
+    key="descending_fifths_recursive_expansion",
+    name="Descending fifths recursive expansion",
+    production_rule="X -> IV X",
+    description="Prepends a fourth-above (descending-fifths) predecessor chord.",
+)
+TRANSFORMATION_ROCK_BLUES_DOMINANT_SUBSTITUTE = TransformationMeta(
+    key="rock_blues_dominant_substitute",
+    name="Rock/blues dominant substitute",
+    production_rule="V -> ♭VII",
+    description="Substitutes dominant with ♭VII in rock/blues harmonic language.",
+)
+
+
+def transform_duplication_prolongation(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `X -> X X` by duplicating any chord into two equal-duration copies."""
     for i, timed in enumerate(seq):
-        chord = timed.chord
-        if chord.diminished7:
-            continue
-        half = timed.duration / 2
-        first = TimedChord(chord=Chord(root=chord.root, minor=chord.minor), duration=half)
-        second = TimedChord(
-            chord=Chord(root=chord.root, minor=chord.minor, dominant7=chord.dominant7),
-            duration=half,
+        left_duration, right_duration = _split_duration_pair(timed)
+        replacement = (
+            TimedChord(chord=timed.chord, duration=left_duration),
+            TimedChord(chord=timed.chord, duration=right_duration),
         )
-        replacement = (first, second)
-        result = replace_span(seq, i, i + 1, replacement)
-        yield RuleApplication(
-            rule="1",
+        yield _rule_application(
+            TRANSFORMATION_DUPLICATION,
+            seq,
             start=i,
             end=i + 1,
-            before=timed_chord_tokens((timed,)),
-            replacement=timed_chord_tokens(replacement),
-            result=timed_chord_tokens(result),
+            replacement=replacement,
         )
 
 
-def rule_2(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
-    # Rule 2: x(m)(7) -> x(m)(7) Sdx
+def transform_descending_fifths_diatonic_chain(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `X -> Δ/X X` using a diatonic predecessor above the target by fourth."""
     for i, timed in enumerate(seq):
-        chord = timed.chord
-        if chord.diminished7:
+        if timed.chord.is_diminished():
             continue
-        half = timed.duration / 2
-        first = TimedChord(chord=chord, duration=half)
-        second = TimedChord(chord=Chord(root=subdominant_root(chord.root)), duration=half)
-        replacement = (first, second)
-        result = replace_span(seq, i, i + 1, replacement)
-        yield RuleApplication(
-            rule="2",
+        left_duration, right_duration = _split_duration_pair(timed)
+        predecessor = _diatonic_chord_for_root(subdominant_root(timed.chord.root))
+        replacement = (
+            TimedChord(chord=predecessor, duration=left_duration),
+            TimedChord(chord=timed.chord, duration=right_duration),
+        )
+        yield _rule_application(
+            TRANSFORMATION_DESCENDING_FIFTHS_DIATONIC,
+            seq,
             start=i,
             end=i + 1,
-            before=timed_chord_tokens((timed,)),
-            replacement=timed_chord_tokens(replacement),
-            result=timed_chord_tokens(result),
+            replacement=replacement,
         )
 
 
-def rule_3a(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
-    # Rule 3a: w x7 -> Dx(m)7 x7
-    for i in range(len(seq) - 1):
-        w = seq[i]
-        x7 = seq[i + 1]
-        if not w.chord.is_plain():
+def transform_subdominant_prepares_dominant(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `V -> IV V` by expanding dominant with a preceding IV."""
+    for i, timed in enumerate(seq):
+        if not _is_root(timed.chord.root, "V"):
             continue
-        if not x7.chord.is_major_dom7():
+        if timed.chord.is_diminished():
             continue
-        d_root = dominant_root(x7.chord.root)
-        options = (
-            Chord(root=d_root, dominant7=True),
-            Chord(root=d_root, minor=True, dominant7=True),
+        left_duration, right_duration = _split_duration_pair(timed)
+        replacement = (
+            TimedChord(chord=Chord(root=Root(ROMAN_TO_DEGREE["IV"])), duration=left_duration),
+            TimedChord(chord=timed.chord, duration=right_duration),
         )
-        for candidate in options:
-            replacement = (
-                TimedChord(chord=candidate, duration=w.duration),
-                TimedChord(chord=x7.chord, duration=x7.duration),
-            )
-            result = replace_span(seq, i, i + 2, replacement)
-            yield RuleApplication(
-                rule="3a",
-                start=i,
-                end=i + 2,
-                before=timed_chord_tokens((w, x7)),
-                replacement=timed_chord_tokens(replacement),
-                result=timed_chord_tokens(result),
-            )
+        yield _rule_application(
+            TRANSFORMATION_SUBDOMINANT_PREPARES_DOMINANT,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
 
 
-def rule_3b(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
-    # Rule 3b: w xm7 -> DX7 xm7
-    for i in range(len(seq) - 1):
-        w = seq[i]
-        xm7 = seq[i + 1]
-        if not w.chord.is_plain():
+def transform_chromatic_submediant_prepares_dominant(
+    seq: Sequence[TimedChord],
+) -> Iterable[RuleApplication]:
+    """Apply `V -> ♭VI V` by expanding dominant with a chromatic ♭VI approach."""
+    for i, timed in enumerate(seq):
+        if not _is_root(timed.chord.root, "V"):
             continue
-        if not xm7.chord.is_minor_dom7():
+        if timed.chord.is_diminished():
+            continue
+        left_duration, right_duration = _split_duration_pair(timed)
+        replacement = (
+            TimedChord(chord=Chord(root=Root(ROMAN_TO_DEGREE["VI"], accidental=-1)), duration=left_duration),
+            TimedChord(chord=timed.chord, duration=right_duration),
+        )
+        yield _rule_application(
+            TRANSFORMATION_CHROMATIC_SUBMEDIANT_PREPARES_DOMINANT,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
+
+
+def transform_diminished_prepares_target(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `X -> vii°/X X` by inserting a leading-tone diminished triad before X."""
+    for i, timed in enumerate(seq):
+        if timed.chord.is_diminished():
+            continue
+        left_duration, right_duration = _split_duration_pair(timed)
+        replacement = (
+            TimedChord(
+                chord=Chord(root=leading_tone_root(timed.chord.root), diminished=True),
+                duration=left_duration,
+            ),
+            TimedChord(chord=timed.chord, duration=right_duration),
+        )
+        yield _rule_application(
+            TRANSFORMATION_DIMINISHED_PREPARES_TARGET,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
+
+
+def transform_applied_dominant(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `X -> V/X X` by prepending the secondary dominant of X."""
+    for i, timed in enumerate(seq):
+        if timed.chord.is_diminished():
+            continue
+        left_duration, right_duration = _split_duration_pair(timed)
+        replacement = (
+            TimedChord(
+                chord=Chord(root=dominant_root(timed.chord.root), dominant7=True),
+                duration=left_duration,
+            ),
+            TimedChord(chord=timed.chord, duration=right_duration),
+        )
+        yield _rule_application(
+            TRANSFORMATION_APPLIED_DOMINANT,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
+
+
+def transform_applied_leading_tone(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `X -> vii°/X X` by prepending a secondary leading-tone diminished seventh."""
+    for i, timed in enumerate(seq):
+        if timed.chord.is_diminished():
+            continue
+        left_duration, right_duration = _split_duration_pair(timed)
+        replacement = (
+            TimedChord(
+                chord=Chord(root=leading_tone_root(timed.chord.root), diminished7=True),
+                duration=left_duration,
+            ),
+            TimedChord(chord=timed.chord, duration=right_duration),
+        )
+        yield _rule_application(
+            TRANSFORMATION_APPLIED_LEADING_TONE,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
+
+
+def transform_neapolitan_prepares_dominant(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `V -> ♭II V` by expanding dominant with a Neapolitan predominant."""
+    for i, timed in enumerate(seq):
+        if not _is_root(timed.chord.root, "V"):
+            continue
+        if timed.chord.is_diminished():
+            continue
+        left_duration, right_duration = _split_duration_pair(timed)
+        replacement = (
+            TimedChord(chord=Chord(root=Root(ROMAN_TO_DEGREE["II"], accidental=-1)), duration=left_duration),
+            TimedChord(chord=timed.chord, duration=right_duration),
+        )
+        yield _rule_application(
+            TRANSFORMATION_NEAPOLITAN_PREPARES_DOMINANT,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
+
+
+def transform_plagal_expansion(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `I -> IV I` by expanding tonic with plagal motion."""
+    for i, timed in enumerate(seq):
+        if not _is_root(timed.chord.root, "I"):
+            continue
+        if timed.chord.is_diminished():
+            continue
+        left_duration, right_duration = _split_duration_pair(timed)
+        replacement = (
+            TimedChord(chord=Chord(root=Root(ROMAN_TO_DEGREE["IV"])), duration=left_duration),
+            TimedChord(chord=timed.chord, duration=right_duration),
+        )
+        yield _rule_application(
+            TRANSFORMATION_PLAGAL_EXPANSION,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
+
+
+def transform_backdoor_dominant_expansion(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `I -> ♭VII7 I` by inserting a backdoor dominant before tonic."""
+    for i, timed in enumerate(seq):
+        if not _is_root(timed.chord.root, "I"):
+            continue
+        if timed.chord.is_diminished():
+            continue
+        left_duration, right_duration = _split_duration_pair(timed)
+        replacement = (
+            TimedChord(
+                chord=Chord(root=Root(ROMAN_TO_DEGREE["VII"], accidental=-1), dominant7=True),
+                duration=left_duration,
+            ),
+            TimedChord(chord=timed.chord, duration=right_duration),
+        )
+        yield _rule_application(
+            TRANSFORMATION_BACKDOOR_DOMINANT_EXPANSION,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
+
+
+def transform_tritone_substitution(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `V7 -> ♭II7` as a tritone dominant substitute."""
+    for i, timed in enumerate(seq):
+        if not timed.chord.is_major_dom7():
+            continue
+        if not _is_root(timed.chord.root, "V"):
             continue
         replacement = (
             TimedChord(
-                chord=Chord(root=dominant_root(xm7.chord.root), dominant7=True),
-                duration=w.duration,
+                chord=Chord(root=Root(ROMAN_TO_DEGREE["II"], accidental=-1), dominant7=True),
+                duration=timed.duration,
             ),
-            TimedChord(chord=xm7.chord, duration=xm7.duration),
         )
-        result = replace_span(seq, i, i + 2, replacement)
-        yield RuleApplication(
-            rule="3b",
+        yield _rule_application(
+            TRANSFORMATION_TRITONE_SUBSTITUTION,
+            seq,
             start=i,
-            end=i + 2,
-            before=timed_chord_tokens((w, xm7)),
-            replacement=timed_chord_tokens(replacement),
-            result=timed_chord_tokens(result),
+            end=i + 1,
+            replacement=replacement,
         )
 
 
-def rule_4(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
-    # Rule 4: DX7 x(m)(7) -> bStx(m)7 x(m)(7)
-    for i in range(len(seq) - 1):
-        dx7 = seq[i]
-        x = seq[i + 1]
-        if not dx7.chord.is_major_dom7():
+def transform_dominant_diminished_equivalence(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `V7 -> vii°` by collapsing dominant seventh into diminished form."""
+    for i, timed in enumerate(seq):
+        if not timed.chord.is_major_dom7():
             continue
-        if x.chord.diminished7:
-            continue
-        if dx7.chord.root != dominant_root(x.chord.root):
+        if not _is_root(timed.chord.root, "V"):
             continue
         replacement = (
             TimedChord(
-                chord=Chord(
-                    root=flat_supertonic_root(x.chord.root),
-                    minor=x.chord.minor,
-                    dominant7=True,
-                ),
-                duration=dx7.duration,
+                chord=Chord(root=Root(ROMAN_TO_DEGREE["VII"]), diminished=True),
+                duration=timed.duration,
             ),
-            TimedChord(chord=x.chord, duration=x.duration),
         )
-        result = replace_span(seq, i, i + 2, replacement)
-        yield RuleApplication(
-            rule="4",
+        yield _rule_application(
+            TRANSFORMATION_DOMINANT_DIMINISHED_EQUIVALENCE,
+            seq,
             start=i,
-            end=i + 2,
-            before=timed_chord_tokens((dx7, x)),
-            replacement=timed_chord_tokens(replacement),
-            result=timed_chord_tokens(result),
+            end=i + 1,
+            replacement=replacement,
         )
 
 
-def rule_5(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
-    # Rule 5: x x x -> x Stxm Mxm  (major chords only)
-    for i in range(len(seq) - 2):
-        x1, x2, x3 = seq[i], seq[i + 1], seq[i + 2]
-        c1, c2, c3 = x1.chord, x2.chord, x3.chord
-        if not (c1 == c2 == c3):
+def transform_common_tone_diminished_expansion(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `X -> X°7 X` by preceding X with a common-tone diminished seventh."""
+    for i, timed in enumerate(seq):
+        if timed.chord.is_diminished():
             continue
-        if not c1.is_plain_major():
+        left_duration, right_duration = _split_duration_pair(timed)
+        replacement = (
+            TimedChord(chord=Chord(root=timed.chord.root, diminished7=True), duration=left_duration),
+            TimedChord(chord=timed.chord, duration=right_duration),
+        )
+        yield _rule_application(
+            TRANSFORMATION_COMMON_TONE_DIMINISHED_EXPANSION,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
+
+
+def transform_chromatic_mediant_substitution_to_flat_iii(
+    seq: Sequence[TimedChord],
+) -> Iterable[RuleApplication]:
+    """Apply `I -> ♭III` by substituting tonic with flat chromatic mediant."""
+    for i, timed in enumerate(seq):
+        if not _is_root(timed.chord.root, "I"):
+            continue
+        if not timed.chord.is_plain_major():
+            continue
+        replacement = (TimedChord(chord=Chord(root=Root(ROMAN_TO_DEGREE["III"], accidental=-1)), duration=timed.duration),)
+        yield _rule_application(
+            TRANSFORMATION_CHROMATIC_MEDIANT_TO_FLAT_III,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
+
+
+def transform_chromatic_mediant_substitution_to_iii(
+    seq: Sequence[TimedChord],
+) -> Iterable[RuleApplication]:
+    """Apply `I -> III` by substituting tonic with raised chromatic mediant."""
+    for i, timed in enumerate(seq):
+        if not _is_root(timed.chord.root, "I"):
+            continue
+        if not timed.chord.is_plain_major():
+            continue
+        replacement = (TimedChord(chord=Chord(root=Root(ROMAN_TO_DEGREE["III"])), duration=timed.duration),)
+        yield _rule_application(
+            TRANSFORMATION_CHROMATIC_MEDIANT_TO_III,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
+
+
+def transform_chromatic_mediant_substitution_to_flat_vi(
+    seq: Sequence[TimedChord],
+) -> Iterable[RuleApplication]:
+    """Apply `I -> ♭VI` by substituting tonic with flat-submediant chromatic mediant."""
+    for i, timed in enumerate(seq):
+        if not _is_root(timed.chord.root, "I"):
+            continue
+        if not timed.chord.is_plain_major():
+            continue
+        replacement = (TimedChord(chord=Chord(root=Root(ROMAN_TO_DEGREE["VI"], accidental=-1)), duration=timed.duration),)
+        yield _rule_application(
+            TRANSFORMATION_CHROMATIC_MEDIANT_TO_FLAT_VI,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
+
+
+def transform_descending_fifths_recursive_expansion(
+    seq: Sequence[TimedChord],
+) -> Iterable[RuleApplication]:
+    """Apply `X -> IV X` recursively by adding a fourth-above predecessor."""
+    for i, timed in enumerate(seq):
+        if timed.chord.is_diminished():
+            continue
+        left_duration, right_duration = _split_duration_pair(timed)
+        replacement = (
+            TimedChord(chord=Chord(root=subdominant_root(timed.chord.root)), duration=left_duration),
+            TimedChord(chord=timed.chord, duration=right_duration),
+        )
+        yield _rule_application(
+            TRANSFORMATION_DESCENDING_FIFTHS_RECURSIVE,
+            seq,
+            start=i,
+            end=i + 1,
+            replacement=replacement,
+        )
+
+
+def transform_rock_blues_dominant_substitute(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
+    """Apply `V -> ♭VII` as a rock/blues dominant-function substitute."""
+    for i, timed in enumerate(seq):
+        if not _is_root(timed.chord.root, "V"):
+            continue
+        if timed.chord.is_diminished():
             continue
         replacement = (
-            TimedChord(chord=c1, duration=x1.duration),
-            TimedChord(chord=Chord(root=supertonic_root(c1.root), minor=True), duration=x2.duration),
-            TimedChord(chord=Chord(root=mediant_root(c1.root), minor=True), duration=x3.duration),
+            TimedChord(chord=Chord(root=Root(ROMAN_TO_DEGREE["VII"], accidental=-1)), duration=timed.duration),
         )
-        result = replace_span(seq, i, i + 3, replacement)
-        yield RuleApplication(
-            rule="5",
+        yield _rule_application(
+            TRANSFORMATION_ROCK_BLUES_DOMINANT_SUBSTITUTE,
+            seq,
             start=i,
-            end=i + 3,
-            before=timed_chord_tokens((x1, x2, x3)),
-            replacement=timed_chord_tokens(replacement),
-            result=timed_chord_tokens(result),
+            end=i + 1,
+            replacement=replacement,
         )
 
 
-def rule_6(seq: Sequence[TimedChord]) -> Iterable[RuleApplication]:
-    # completed rule6:
-    # x(m) x(m) y -> x(m) #x°7 y
-    # where y is one of:
-    # 1) Stxm(7), 2) leading tone of x, 3) dominant of x
-    for i in range(len(seq) - 2):
-        first, second, third = seq[i], seq[i + 1], seq[i + 2]
-        if not (first.chord == second.chord and first.chord.is_plain()):
-            continue
-
-        third_root = third.chord.root
-        supertonic = supertonic_root(first.chord.root)
-        lead_tone = leading_tone_root(first.chord.root)
-        dominant = dominant_root(first.chord.root)
-
-        stxm_match = (
-            third_root == supertonic
-            and third.chord.minor
-            and not third.chord.diminished7
-        )
-        leading_tone_match = third_root == lead_tone and not third.chord.diminished7
-        dominant_match = third_root == dominant and not third.chord.diminished7
-        if not (stxm_match or leading_tone_match or dominant_match):
-            continue
-
-        replacement = (
-            TimedChord(chord=first.chord, duration=first.duration),
-            TimedChord(chord=Chord(root=sharpen_root(first.chord.root), diminished7=True), duration=second.duration),
-            TimedChord(chord=third.chord, duration=third.duration),
-        )
-        result = replace_span(seq, i, i + 3, replacement)
-        yield RuleApplication(
-            rule="6",
-            start=i,
-            end=i + 3,
-            before=timed_chord_tokens((first, second, third)),
-            replacement=timed_chord_tokens(replacement),
-            result=timed_chord_tokens(result),
-            assumption=None,
-        )
-
-RULE_FUNCTIONS = (rule_1, rule_2, rule_3a, rule_3b, rule_4, rule_5, rule_6)
+RULE_FUNCTIONS = (
+    transform_duplication_prolongation,
+    transform_descending_fifths_diatonic_chain,
+    transform_subdominant_prepares_dominant,
+    transform_chromatic_submediant_prepares_dominant,
+    transform_diminished_prepares_target,
+    transform_applied_dominant,
+    transform_applied_leading_tone,
+    transform_neapolitan_prepares_dominant,
+    transform_plagal_expansion,
+    transform_backdoor_dominant_expansion,
+    transform_tritone_substitution,
+    transform_dominant_diminished_equivalence,
+    transform_common_tone_diminished_expansion,
+    transform_chromatic_mediant_substitution_to_flat_iii,
+    transform_chromatic_mediant_substitution_to_iii,
+    transform_chromatic_mediant_substitution_to_flat_vi,
+    transform_descending_fifths_recursive_expansion,
+    transform_rock_blues_dominant_substitute,
+)
 
 
 def coerce_timed_chord(item: str | TimedChord) -> TimedChord:
@@ -778,6 +1141,9 @@ def debug_one_step(tokens: Sequence[str | TimedChord]) -> list[dict[str, Any]]:
     return [
         {
             "rule": app.rule,
+            "rule_name": app.rule_name,
+            "production_rule": app.production_rule,
+            "description": app.description,
             "span": [app.start, app.end],  # 0-based
             "replacement_span_in_result": [app.start, app.start + len(app.replacement)],
             "before": list(app.before),
@@ -802,7 +1168,7 @@ def parse_progression_arg(raw: str) -> list[TimedChord]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Explore Steedman jazz-grammar rewrites by depth (rules 1-6).",
+        description="Explore named jazz-grammar rewrites by depth.",
     )
     parser.add_argument(
         "progression",

@@ -18,35 +18,40 @@ class JazzGrammarTests(unittest.TestCase):
         chord = parse_timed_chord_token("bIIm7@3/2")
         self.assertEqual(chord.to_token(), "bIIm7@3/2")
 
-    def test_rule_1_splits_duration_equally(self) -> None:
+    def test_duplication_prolongation_splits_duration_equally(self) -> None:
         apps = find_next_steps(["I@4"])
-        rule1 = [app for app in apps if app.rule == "1"]
-        self.assertEqual(len(rule1), 1)
-        self.assertEqual(rule1[0].replacement, ("I@2", "I@2"))
+        duplication = [app for app in apps if app.rule == "duplication_prolongation"]
+        self.assertEqual(len(duplication), 1)
+        self.assertEqual(duplication[0].replacement, ("I@2", "I@2"))
+        self.assertEqual(duplication[0].rule_name, "Duplication (prolongation)")
 
-    def test_rule_3a_detected_and_preserves_slot_duration(self) -> None:
-        apps = find_next_steps(["I@3", "V7@1"])
-        replacements = {tuple(app.replacement) for app in apps if app.rule == "3a"}
-        self.assertIn(("II7@3", "V7"), replacements)
-        self.assertIn(("IIm7@3", "V7"), replacements)
+    def test_applied_dominant_detected_and_preserves_slot_duration(self) -> None:
+        apps = find_next_steps(["V@3"])
+        applied = [app for app in apps if app.rule == "applied_dominant_secondary_dominant"]
+        self.assertEqual(len(applied), 1)
+        self.assertEqual(applied[0].replacement, ("II7@3/2", "V@3/2"))
 
-    def test_rule_6_detected_supertonic_minor_variant(self) -> None:
-        apps = find_next_steps(["I@2", "I@2", "IIm7@2"])
-        rule6 = [app for app in apps if app.rule == "6"]
-        self.assertEqual(len(rule6), 1)
-        self.assertEqual(rule6[0].replacement, ("I@2", "#I°7@2", "IIm7@2"))
+    def test_applied_leading_tone_detected(self) -> None:
+        apps = find_next_steps(["I@2"])
+        leading = [app for app in apps if app.rule == "applied_leading_tone_secondary_vii_dim"]
+        self.assertEqual(len(leading), 1)
+        self.assertEqual(leading[0].replacement, ("VII°7", "I"))
 
-    def test_rule_6_detected_leading_tone_variant(self) -> None:
-        apps = find_next_steps(["I@2", "I@2", "VII@2"])
-        rule6 = [app for app in apps if app.rule == "6"]
-        self.assertEqual(len(rule6), 1)
-        self.assertEqual(rule6[0].replacement, ("I@2", "#I°7@2", "VII@2"))
+    def test_tritone_substitution_detected(self) -> None:
+        apps = find_next_steps(["V7@2"])
+        tritone = [app for app in apps if app.rule == "tritone_substitution"]
+        self.assertEqual(len(tritone), 1)
+        self.assertEqual(tritone[0].replacement, ("bII7@2",))
 
-    def test_rule_6_detected_dominant_variant(self) -> None:
-        apps = find_next_steps(["I@2", "I@2", "V7@2"])
-        rule6 = [app for app in apps if app.rule == "6"]
-        self.assertEqual(len(rule6), 1)
-        self.assertEqual(rule6[0].replacement, ("I@2", "#I°7@2", "V7@2"))
+    def test_dominant_diminished_equivalence_detected(self) -> None:
+        apps = find_next_steps(["V7@2"])
+        diminished = [app for app in apps if app.rule == "dominant_diminished_equivalence"]
+        self.assertEqual(len(diminished), 1)
+        self.assertEqual(diminished[0].replacement, ("VII°@2",))
+
+    def test_parse_diminished_triad_with_duration(self) -> None:
+        chord = parse_timed_chord_token("VII°@3/2")
+        self.assertEqual(chord.to_token(), "VII°@3/2")
 
     def test_depth_levels_include_all_sequences_per_level(self) -> None:
         levels = explore_sequences_by_depth(["I@2"], depth=2)
@@ -54,7 +59,9 @@ class JazzGrammarTests(unittest.TestCase):
         self.assertIn(1, levels)
         self.assertIn(2, levels)
         self.assertEqual(levels[0], [("I@2",)])
-        self.assertEqual(set(levels[1]), {("I", "I"), ("I", "IV")})
+        self.assertIn(("I", "I"), set(levels[1]))
+        self.assertIn(("IV", "I"), set(levels[1]))
+        self.assertIn(("V7", "I"), set(levels[1]))
         self.assertGreaterEqual(len(levels[2]), 1)
 
     def test_depth_level_sequences_are_unique(self) -> None:
