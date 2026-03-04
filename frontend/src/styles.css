@@ -398,6 +398,44 @@ button:disabled {
   font-family: "Source Code Pro", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.row-play-control rect {
+  fill: #ffffff;
+  stroke: #9fb0c7;
+  stroke-width: 1.1;
+}
+
+.row-play-control text {
+  fill: #253346;
+  text-anchor: middle;
+  font-size: 10px;
+  font-weight: 600;
+  user-select: none;
+  pointer-events: none;
+}
+
+.row-play-control:not(.is-disabled) {
+  cursor: pointer;
+}
+
+.row-play-control:not(.is-disabled):hover rect {
+  stroke: #5e7ea5;
+  fill: #f3f8ff;
+}
+
+.row-play-control.is-playing rect {
+  stroke: #3757dd;
+  fill: #eaf0ff;
+}
+
+.row-play-control.is-disabled rect {
+  fill: #f6f8fb;
+  stroke: #cad3df;
+}
+
+.row-play-control.is-disabled text {
+  fill: #9aa7b8;
+}
+
 @media (max-width: 1260px) {
   .top-field-progression {
     min-width: min(280px, 55vw);

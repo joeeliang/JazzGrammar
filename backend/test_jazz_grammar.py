@@ -1,6 +1,8 @@
 import unittest
 
 from jazz_grammar import (
+    chord_midi_notes,
+    chord_note_names,
     explore_sequences_by_depth,
     find_next_steps,
     key_tonic_semitone,
@@ -9,6 +11,7 @@ from jazz_grammar import (
     parse_timed_chord_token,
     realize_chord,
     realize_progression,
+    timed_progression_to_chord_events,
     timed_progression_to_grid_notation,
 )
 
@@ -104,6 +107,30 @@ class JazzGrammarTests(unittest.TestCase):
     def test_invalid_key_name_raises(self) -> None:
         with self.assertRaises(ValueError):
             key_tonic_semitone("H")
+
+    def test_chord_note_names_support_standard_qualities(self) -> None:
+        self.assertEqual(chord_note_names(parse_timed_chord_token("I").chord, "C"), ["C", "E", "G", "C"])
+        self.assertEqual(chord_note_names(parse_timed_chord_token("IIm").chord, "C"), ["D", "F", "A", "D"])
+        self.assertEqual(chord_note_names(parse_timed_chord_token("V7").chord, "C"), ["G", "B", "D", "F"])
+        self.assertEqual(chord_note_names(parse_timed_chord_token("IIm7").chord, "C"), ["D", "F", "A", "C"])
+        self.assertEqual(chord_note_names(parse_timed_chord_token("VII°").chord, "C"), ["B", "D", "F", "B"])
+        self.assertEqual(chord_note_names(parse_timed_chord_token("VII°7").chord, "C"), ["B", "D", "F", "G#"])
+
+    def test_chord_midi_notes_support_standard_qualities(self) -> None:
+        self.assertEqual(chord_midi_notes(parse_timed_chord_token("I").chord, "C"), [48, 52, 55, 60])
+        self.assertEqual(chord_midi_notes(parse_timed_chord_token("IIm").chord, "C"), [50, 53, 57, 62])
+        self.assertEqual(chord_midi_notes(parse_timed_chord_token("V7").chord, "C"), [55, 59, 62, 65])
+        self.assertEqual(chord_midi_notes(parse_timed_chord_token("IIm7").chord, "C"), [50, 53, 57, 60])
+        self.assertEqual(chord_midi_notes(parse_timed_chord_token("VII°").chord, "C"), [59, 62, 65, 71])
+        self.assertEqual(chord_midi_notes(parse_timed_chord_token("VII°7").chord, "C"), [59, 62, 65, 68])
+
+    def test_timed_progression_to_chord_events(self) -> None:
+        events = timed_progression_to_chord_events(["I@1", "V7@2"], "C")
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["notes"], [48, 52, 55, 60])
+        self.assertAlmostEqual(events[0]["bars"], 0.25)
+        self.assertEqual(events[1]["notes"], [55, 59, 62, 65])
+        self.assertAlmostEqual(events[1]["bars"], 0.5)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ try:
         parse_timed_chord_token,
         realize_chord,
         realize_timed_chord,
+        timed_progression_to_chord_events,
         timed_progression_to_grid_notation,
     )
 except ModuleNotFoundError:
@@ -37,6 +38,7 @@ except ModuleNotFoundError:
         parse_timed_chord_token,
         realize_chord,
         realize_timed_chord,
+        timed_progression_to_chord_events,
         timed_progression_to_grid_notation,
     )
 
@@ -219,8 +221,7 @@ def _parse_request(payload: dict[str, Any]) -> tuple[list[TimedChord], str, Frac
     requested_notation = _notation_mode(payload)
     display_mode = _display_mode(payload)
     display_key = _display_key(payload)
-    if display_mode == "key":
-        key_tonic_semitone(display_key)
+    key_tonic_semitone(display_key)
     raw_progression, parsed_notation = parse_progression_text(progression_text, requested_notation)
     progression_in_beats = _convert_to_grammar_units(
         raw_progression,
@@ -234,6 +235,15 @@ def _parse_request(payload: dict[str, Any]) -> tuple[list[TimedChord], str, Frac
 def _grid_for_tokens(tokens_in_beats: Sequence[str]) -> str:
     timed = [parse_timed_chord_token(token) for token in tokens_in_beats]
     return timed_progression_to_grid_notation(timed)
+
+
+def _events_for_tokens(tokens_in_beats: Sequence[str], beats_per_bar: Fraction, display_key: str) -> list[dict[str, Any]]:
+    timed = [parse_timed_chord_token(token) for token in tokens_in_beats]
+    return timed_progression_to_chord_events(
+        timed,
+        display_key,
+        beats_per_bar=beats_per_bar,
+    )
 
 
 def _grid_for_display(tokens_in_beats: Sequence[str], display_mode: str, display_key: str) -> str:
@@ -281,6 +291,7 @@ async def parse(payload: dict[str, Any] | None = Body(default=None)) -> dict[str
             "display": progression_display,
             "grid": _grid_for_tokens(progression_beats),
             "gridDisplay": _grid_for_display(progression_beats, display_mode, display_key),
+            "events": _events_for_tokens(progression_beats, beats_per_bar, display_key),
         },
         "meta": {
             "notationMode": notation_mode,
@@ -343,6 +354,7 @@ async def suggest(payload: dict[str, Any] | None = Body(default=None)) -> dict[s
                     ),
                     "grid": _grid_for_tokens(before_beats),
                     "gridDisplay": _grid_for_display(before_beats, display_mode, display_key),
+                    "events": _events_for_tokens(before_beats, beats_per_bar, display_key),
                 },
                 "replacement": {
                     "beats": replacement_beats,
@@ -359,6 +371,7 @@ async def suggest(payload: dict[str, Any] | None = Body(default=None)) -> dict[s
                         display_mode,
                         display_key,
                     ),
+                    "events": _events_for_tokens(replacement_beats, beats_per_bar, display_key),
                 },
                 "result": {
                     "beats": result_beats,
@@ -371,6 +384,7 @@ async def suggest(payload: dict[str, Any] | None = Body(default=None)) -> dict[s
                     ),
                     "grid": _grid_for_tokens(result_beats),
                     "gridDisplay": _grid_for_display(result_beats, display_mode, display_key),
+                    "events": _events_for_tokens(result_beats, beats_per_bar, display_key),
                 },
                 "summary": f"{app_data.rule_name}: {' | '.join(before_beats)} -> {' | '.join(replacement_beats)}",
             }
@@ -382,6 +396,7 @@ async def suggest(payload: dict[str, Any] | None = Body(default=None)) -> dict[s
             "display": base_display,
             "grid": _grid_for_tokens(progression_beats),
             "gridDisplay": _grid_for_display(progression_beats, display_mode, display_key),
+            "events": _events_for_tokens(progression_beats, beats_per_bar, display_key),
         },
         "suggestions": suggestions,
         "meta": {

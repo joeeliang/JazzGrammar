@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { JazzyChordEngine } from "./audio/jazzyChordEngine";
 
 const DEFAULT_PROGRESSION = "I@1, IV@1, V7@2";
 const KEY_OPTIONS = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
@@ -89,7 +90,16 @@ function buildChildParentMap(parentCount, childCount, applied) {
   return map;
 }
 
-function D3ProgressionDiagram({ layers, cfg, selectedChord, onSelectChord, centerSignal }) {
+function D3ProgressionDiagram({
+  layers,
+  cfg,
+  selectedChord,
+  onSelectChord,
+  centerSignal,
+  onPlayLayer,
+  canPlayLayer,
+  playingLayerIndex
+}) {
   const hostRef = useRef(null);
   const svgRef = useRef(null);
   const sceneRef = useRef(null);
@@ -125,6 +135,7 @@ function D3ProgressionDiagram({ layers, cfg, selectedChord, onSelectChord, cente
     const edgeLayer = viewport.append("g");
     const nodeLayer = viewport.append("g");
     const annotationLayer = viewport.append("g");
+    const playLayer = viewport.append("g");
 
     const zoomBehavior = d3.zoom()
       .scaleExtent([0.2, 4.2])
@@ -157,6 +168,7 @@ function D3ProgressionDiagram({ layers, cfg, selectedChord, onSelectChord, cente
       edgeLayer,
       nodeLayer,
       annotationLayer,
+      playLayer,
       zoomBehavior,
       contentBounds: null
     };
@@ -175,7 +187,8 @@ function D3ProgressionDiagram({ layers, cfg, selectedChord, onSelectChord, cente
       boxLayer,
       edgeLayer,
       nodeLayer,
-      annotationLayer
+      annotationLayer,
+      playLayer
     } = sceneRef.current;
 
     const width = size.width;
@@ -391,6 +404,47 @@ function D3ProgressionDiagram({ layers, cfg, selectedChord, onSelectChord, cente
       .attr("x", (d) => (d.left + d.right) / 2)
       .attr("y", (d) => d.y + 23);
 
+    const controlData = visibleLayers.map((layerData, layerIndex) => {
+      const layerNodes = byLayer.get(layerIndex) || [];
+      const rowNode = layerNodes[0];
+      return {
+        id: `row-play-${layerIndex}`,
+        layer: layerIndex,
+        y: rowNode ? rowNode.y : (y0 + layerIndex * cfg.layerGap),
+        x: leftPad - 46,
+        canPlay: typeof canPlayLayer === "function" ? canPlayLayer(layerData) : false,
+        isPlaying: playingLayerIndex === layerIndex
+      };
+    });
+
+    const playGroups = playLayer.selectAll("g.row-play-control")
+      .data(controlData, (d) => d.id)
+      .join("g")
+      .attr("class", (d) => {
+        if (d.canPlay && d.isPlaying) return "row-play-control is-playing";
+        if (d.canPlay) return "row-play-control";
+        return "row-play-control is-disabled";
+      })
+      .attr("transform", (d) => `translate(${d.x}, ${d.y - 12})`)
+      .style("pointer-events", "auto")
+      .on("click", (event, d) => {
+        event.stopPropagation();
+        if (!d.canPlay || !onPlayLayer) return;
+        onPlayLayer(d.layer);
+      });
+
+    playGroups.selectAll("rect").data((d) => [d]).join("rect")
+      .attr("width", 42)
+      .attr("height", 24)
+      .attr("rx", 6)
+      .attr("ry", 6);
+
+    playGroups.selectAll("text").data((d) => [d]).join("text")
+      .attr("x", 21)
+      .attr("y", 12)
+      .attr("dy", "0.34em")
+      .text((d) => (d.isPlaying ? "Stop" : "Play"));
+
     if (nodes.length > 0) {
       sceneRef.current.contentBounds = {
         left: Math.min(...nodes.map((node) => node.bounds.left)),
@@ -399,7 +453,17 @@ function D3ProgressionDiagram({ layers, cfg, selectedChord, onSelectChord, cente
         bottom: Math.max(...nodes.map((node) => node.bounds.bottom))
       };
     }
-  }, [cfg, layers, onSelectChord, selectedChord, size.height, size.width]);
+  }, [
+    canPlayLayer,
+    cfg,
+    layers,
+    onPlayLayer,
+    onSelectChord,
+    playingLayerIndex,
+    selectedChord,
+    size.height,
+    size.width
+  ]);
 
   useEffect(() => {
     if (!sceneRef.current?.contentBounds || size.width <= 0 || size.height <= 0) return;
@@ -455,6 +519,7 @@ export default function App() {
       progressionDisplay: initialDisplay,
       progressionGrid: "",
       progressionGridDisplay: "",
+      progressionEvents: [],
       applied: null
     }
   ]);
@@ -465,6 +530,9 @@ export default function App() {
   const [info, setInfo] = useState("Default progression loaded. Click Start to fetch backend suggestions.");
   const [selectedSuggestionId, setSelectedSuggestionId] = useState("");
   const [selectedChord, setSelectedChord] = useState(null);
+  const [playingLayerIndex, setPlayingLayerIndex] = useState(null);
+  const synthRef = useRef(null);
+  const playbackTimerRef = useRef(null);
 
   const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(true);
   const [centerSignal, setCenterSignal] = useState(0);
@@ -513,6 +581,16 @@ export default function App() {
     setCenterSignal((prev) => prev + 1);
   }, [isSuggestionsOpen]);
 
+  useEffect(() => () => {
+    if (playbackTimerRef.current) {
+      window.clearTimeout(playbackTimerRef.current);
+      playbackTimerRef.current = null;
+    }
+    if (synthRef.current) {
+      synthRef.current.stop();
+    }
+  }, []);
+
   function handleSelectChord(nextSelection) {
     if (!nextSelection) {
       setSelectedChord(null);
@@ -524,6 +602,55 @@ export default function App() {
       }
       return nextSelection;
     });
+  }
+
+  function canPlayLayer(layerData) {
+    if (!layerData || !Array.isArray(layerData.progressionEvents)) return false;
+    return layerData.progressionEvents.some((event) => (
+      Number(event?.bars) > 0
+      && Array.isArray(event?.notes)
+      && event.notes.length > 0
+    ));
+  }
+
+  async function handlePlayLayer(layerIndex) {
+    const layerData = layers[layerIndex];
+    if (!canPlayLayer(layerData)) {
+      return;
+    }
+    if (!synthRef.current) {
+      synthRef.current = new JazzyChordEngine();
+    }
+    const synth = synthRef.current;
+
+    if (playbackTimerRef.current) {
+      window.clearTimeout(playbackTimerRef.current);
+      playbackTimerRef.current = null;
+    }
+
+    if (synth.isPlaying() && playingLayerIndex === layerIndex) {
+      synth.stop();
+      setPlayingLayerIndex(null);
+      return;
+    }
+
+    if (synth.isPlaying()) {
+      synth.stop();
+    }
+
+    try {
+      setError("");
+      setPlayingLayerIndex(layerIndex);
+      const result = await synth.play(layerData.progressionEvents);
+      const durationMs = Math.max(120, Math.ceil((result?.durationSec || 0) * 1000) + 140);
+      playbackTimerRef.current = window.setTimeout(() => {
+        setPlayingLayerIndex(null);
+        playbackTimerRef.current = null;
+      }, durationMs);
+    } catch (err) {
+      setPlayingLayerIndex(null);
+      setError(err?.message || "Unable to play progression.");
+    }
   }
 
   function requestPayload(
@@ -591,7 +718,8 @@ export default function App() {
           ...layer,
           progressionDisplay: parseResponse.progression.display,
           progressionGrid: parseResponse.progression.grid,
-          progressionGridDisplay: parseResponse.progression.gridDisplay || parseResponse.progression.grid
+          progressionGridDisplay: parseResponse.progression.gridDisplay || parseResponse.progression.grid,
+          progressionEvents: parseResponse.progression.events || []
         });
       }
       setLayers(refreshedLayers);
@@ -637,6 +765,7 @@ export default function App() {
         progressionDisplay: parseResponse.progression.display,
         progressionGrid: parseResponse.progression.grid,
         progressionGridDisplay: parseResponse.progression.gridDisplay || parseResponse.progression.grid,
+        progressionEvents: parseResponse.progression.events || [],
         applied: null
       };
 
@@ -679,6 +808,7 @@ export default function App() {
         progressionDisplay: suggestion.result.display,
         progressionGrid: suggestion.result.grid,
         progressionGridDisplay: suggestion.result.gridDisplay || suggestion.result.grid,
+        progressionEvents: suggestion.result.events || [],
         applied: {
           rule: suggestion.rule,
           ruleName: suggestion.ruleName || suggestion.rule,
@@ -789,6 +919,9 @@ export default function App() {
             selectedChord={selectedChord}
             onSelectChord={handleSelectChord}
             centerSignal={centerSignal}
+            onPlayLayer={handlePlayLayer}
+            canPlayLayer={canPlayLayer}
+            playingLayerIndex={playingLayerIndex}
           />
         </main>
 

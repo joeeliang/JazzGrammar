@@ -59,6 +59,14 @@ GRID_BAR_RE = re.compile(r"\|([^|]*)\|")
 DEFAULT_SEARCH_DEPTH = 1
 DEFAULT_BEATS_PER_BAR = 4
 MAX_GRID_SUBDIVISIONS = 4
+STANDARD_VOICING_INTERVALS = {
+    "major": (0, 4, 7, 12),
+    "minor": (0, 3, 7, 12),
+    "dominant7": (0, 4, 7, 10),
+    "minor7": (0, 3, 7, 10),
+    "diminished": (0, 3, 6, 12),
+    "diminished7": (0, 3, 6, 9),
+}
 
 
 @dataclass(frozen=True)
@@ -467,6 +475,64 @@ def realize_progression(
         realize_timed_chord(coerce_timed_chord(item), key, show_unit_one=show_unit_one)
         for item in progression
     ]
+
+
+def standard_voicing_intervals(chord: Chord) -> tuple[int, ...]:
+    if chord.diminished7:
+        return STANDARD_VOICING_INTERVALS["diminished7"]
+    if chord.diminished:
+        return STANDARD_VOICING_INTERVALS["diminished"]
+    if chord.dominant7 and chord.minor:
+        return STANDARD_VOICING_INTERVALS["minor7"]
+    if chord.dominant7:
+        return STANDARD_VOICING_INTERVALS["dominant7"]
+    if chord.minor:
+        return STANDARD_VOICING_INTERVALS["minor"]
+    return STANDARD_VOICING_INTERVALS["major"]
+
+
+def chord_note_names(chord: Chord, key: str) -> list[str]:
+    tonic = key_tonic_semitone(key)
+    root_pc = (tonic + semitone_for_root(chord.root)) % 12
+    prefer_flats = key_prefers_flats(key)
+    return [
+        semitone_to_note_name(root_pc + interval, prefer_flats=prefer_flats)
+        for interval in standard_voicing_intervals(chord)
+    ]
+
+
+def chord_midi_notes(chord: Chord, key: str, *, base_octave: int = 3) -> list[int]:
+    if base_octave < 0 or base_octave > 8:
+        raise ValueError("base_octave must be between 0 and 8.")
+    tonic = key_tonic_semitone(key)
+    root_pc = (tonic + semitone_for_root(chord.root)) % 12
+    root_midi = (base_octave + 1) * 12 + root_pc
+    notes = [root_midi + interval for interval in standard_voicing_intervals(chord)]
+    return [max(0, min(127, note)) for note in notes]
+
+
+def timed_progression_to_chord_events(
+    progression: Sequence[str | TimedChord],
+    key: str,
+    *,
+    beats_per_bar: Fraction = Fraction(4, 1),
+    base_octave: int = 3,
+) -> list[dict[str, Any]]:
+    if beats_per_bar <= 0:
+        raise ValueError("beats_per_bar must be positive.")
+    timed = [coerce_timed_chord(item) for item in progression]
+    out: list[dict[str, Any]] = []
+    for item in timed:
+        bars = float(item.duration / beats_per_bar)
+        out.append(
+            {
+                "chord": item.to_token(),
+                "notes": chord_midi_notes(item.chord, key, base_octave=base_octave),
+                "noteNames": chord_note_names(item.chord, key),
+                "bars": bars,
+            }
+        )
+    return out
 
 
 def normalize_accidental(delta: int) -> int:
