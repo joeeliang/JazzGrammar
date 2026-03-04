@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { JazzyChordEngine, defaultSynthParams } from "./audio/jazzyChordEngine";
 
 const DEFAULT_PROGRESSION = "I@1, IV@1, V7@2";
+const DEFAULT_ABSOLUTE_PROGRESSION = "Cmaj7@1, Dm7@1, G7@2";
 const KEY_OPTIONS = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").trim();
 const DEFAULT_CFG = {
@@ -527,6 +528,7 @@ export default function App() {
 
   const [progressionInput, setProgressionInput] = useState(DEFAULT_PROGRESSION);
   const [notationMode, setNotationMode] = useState("duration");
+  const [inputMode, setInputMode] = useState("roman");
   const [durationUnit, setDurationUnit] = useState("beats");
   const [beatsPerBar, setBeatsPerBar] = useState("4");
   const [displayMode, setDisplayMode] = useState("roman");
@@ -701,11 +703,13 @@ export default function App() {
     mode = notationMode,
     nextDisplayMode = displayMode,
     nextDisplayKey = displayKey,
-    nextInputDurationUnit = null
+    nextInputDurationUnit = null,
+    nextInputMode = inputMode
   ) {
     const payload = {
       progression: progressionText,
       notationMode: mode,
+      inputMode: nextInputMode,
       durationUnit,
       beatsPerBar,
       displayMode: nextDisplayMode,
@@ -722,7 +726,8 @@ export default function App() {
     mode = notationMode,
     nextDisplayMode = displayMode,
     nextDisplayKey = displayKey,
-    nextInputDurationUnit = "beats"
+    nextInputDurationUnit = "beats",
+    nextInputMode = "roman"
   ) {
     const data = await postJSON(
       "/api/suggest",
@@ -731,7 +736,8 @@ export default function App() {
         mode,
         nextDisplayMode,
         nextDisplayKey,
-        nextInputDurationUnit
+        nextInputDurationUnit,
+        nextInputMode
       )
     );
     setSuggestions(data.suggestions || []);
@@ -754,7 +760,8 @@ export default function App() {
             "duration",
             nextDisplayMode,
             nextDisplayKey,
-            "beats"
+            "beats",
+            "roman"
           )
         );
         refreshedLayers.push({
@@ -785,9 +792,16 @@ export default function App() {
     await rehydrateDisplay(nextMode, displayKey);
   }
 
+  function handleInputModeChange(nextMode) {
+    setInputMode(nextMode);
+    if (nextMode === "absolute" && progressionInput.trim() === DEFAULT_PROGRESSION) {
+      setProgressionInput(DEFAULT_ABSOLUTE_PROGRESSION);
+    }
+  }
+
   async function handleDisplayKeyChange(nextKey) {
     setDisplayKey(nextKey);
-    if (displayMode === "roman") return;
+    if (displayMode === "roman" && inputMode !== "absolute") return;
     await rehydrateDisplay(displayMode, nextKey);
   }
 
@@ -801,6 +815,7 @@ export default function App() {
       const parseResponse = await postJSON("/api/parse", requestPayload(progressionInput, "auto"));
       const parsedMode = parseResponse.meta?.notationMode || notationMode;
       setNotationMode(parsedMode);
+      setInputMode(parseResponse.meta?.inputMode || inputMode);
 
       const root = {
         id: "layer-0",
@@ -886,8 +901,20 @@ export default function App() {
               id="progression-input"
               value={progressionInput}
               onChange={(event) => setProgressionInput(event.target.value)}
-              placeholder="I@1, IV@1, V7@2"
+              placeholder={inputMode === "absolute" ? "Cmaj7@1, Dm7@1, G7@2" : "I@1, IV@1, V7@2"}
             />
+          </label>
+
+          <label className="top-field" htmlFor="input-mode">
+            <span>Input:</span>
+            <select
+              id="input-mode"
+              value={inputMode}
+              onChange={(event) => handleInputModeChange(event.target.value)}
+            >
+              <option value="roman">Roman numerals</option>
+              <option value="absolute">Absolute chords</option>
+            </select>
           </label>
 
           <label className="top-field" htmlFor="display-key">
@@ -896,7 +923,7 @@ export default function App() {
               id="display-key"
               value={displayKey}
               onChange={(event) => handleDisplayKeyChange(event.target.value)}
-              disabled={busy || displayMode === "roman"}
+              disabled={busy}
             >
               {KEY_OPTIONS.map((keyName) => (
                 <option key={keyName} value={keyName}>{keyName}</option>

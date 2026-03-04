@@ -55,12 +55,14 @@ FLAT_KEY_NAMES = {"F", "Bb", "Eb", "Ab", "Db", "Gb", "Cb", "Fb"}
 ROOT_RE = re.compile(r"^([b#♭♯]*)(VII|VI|IV|V|III|II|I)$")
 LOWER_MINOR_CHORD_RE = re.compile(r"^([b#♭♯]*)(vii|vi|iv|v|iii|ii|i)(7?)$")
 NOTE_NAME_RE = re.compile(r"^([A-Ga-g])([#b♭♯]?)$")
+ABSOLUTE_CHORD_RE = re.compile(r"^([A-Ga-g])([#b♭♯]?)(.*)$")
 GRID_BAR_RE = re.compile(r"\|([^|]*)\|")
 DEFAULT_SEARCH_DEPTH = 1
 DEFAULT_BEATS_PER_BAR = 4
 MAX_GRID_SUBDIVISIONS = 4
 STANDARD_VOICING_INTERVALS = {
     "major": (0, 4, 7, 12),
+    "major7": (0, 4, 7, 11),
     "minor": (0, 3, 7, 12),
     "dominant7": (0, 4, 7, 10),
     "minor7": (0, 3, 7, 10),
@@ -88,11 +90,14 @@ class Root:
 class Chord:
     root: Root
     minor: bool = False
+    major7: bool = False
     dominant7: bool = False
     diminished: bool = False
     diminished7: bool = False
 
     def __post_init__(self) -> None:
+        if self.major7 and (self.minor or self.dominant7 or self.diminished or self.diminished7):
+            raise ValueError("Major seventh cannot be combined with other quality flags.")
         if self.diminished7 and (self.minor or self.dominant7 or self.diminished):
             raise ValueError("Diminished seventh cannot be combined with other quality flags.")
         if self.diminished and (self.minor or self.dominant7 or self.diminished7):
@@ -104,6 +109,8 @@ class Chord:
             return f"{base}°7"
         if self.diminished:
             return f"{base}°"
+        if self.major7:
+            return f"{base}maj7"
         if self.dominant7:
             return f"{base}m7" if self.minor else f"{base}7"
         if self.minor:
@@ -111,10 +118,10 @@ class Chord:
         return base
 
     def is_plain(self) -> bool:
-        return not self.diminished and not self.diminished7 and not self.dominant7
+        return not self.diminished and not self.diminished7 and not self.dominant7 and not self.major7
 
     def is_plain_major(self) -> bool:
-        return self.is_plain() and not self.minor
+        return not self.minor and not self.diminished and not self.diminished7 and not self.dominant7
 
     def is_major_dom7(self) -> bool:
         return self.dominant7 and not self.minor and not self.diminished and not self.diminished7
@@ -202,6 +209,8 @@ def parse_chord(token: str) -> Chord:
         return Chord(root=parse_root(normalized[:-2]), diminished7=True)
     if normalized.endswith("°"):
         return Chord(root=parse_root(normalized[:-1]), diminished=True)
+    if normalized.lower().endswith("maj7"):
+        return Chord(root=parse_root(normalized[:-4]), major7=True)
     if normalized.endswith("m7"):
         return Chord(root=parse_root(normalized[:-2]), minor=True, dominant7=True)
     if normalized.endswith("7"):
@@ -211,7 +220,98 @@ def parse_chord(token: str) -> Chord:
     return Chord(root=parse_root(normalized))
 
 
-def parse_timed_chord_token(token: str) -> TimedChord:
+def _best_root_for_absolute_note(
+    note_semitone: int,
+    key: str,
+    *,
+    accidental_hint: int | None = None,
+) -> Root:
+    tonic = key_tonic_semitone(key)
+    prefer_flats = key_prefers_flats(key)
+    candidates: list[tuple[tuple[int, int, int, int], Root]] = []
+    for degree, scale_semitone in enumerate(MAJOR_SCALE_SEMITONES):
+        degree_pc = (tonic + scale_semitone) % 12
+        accidental = normalize_accidental(note_semitone - degree_pc)
+        hint_match = (
+            accidental_hint is None
+            or accidental_hint == 0
+            or (accidental != 0 and (accidental > 0) == (accidental_hint > 0))
+        )
+        preference_match = (prefer_flats and accidental <= 0) or ((not prefer_flats) and accidental >= 0)
+        score = (
+            abs(accidental),
+            0 if accidental == 0 else 1,
+            0 if hint_match else 1,
+            0 if preference_match else 1,
+            degree,
+        )
+        candidates.append((score, Root(degree=degree, accidental=accidental)))
+    candidates.sort(key=lambda item: item[0])
+    best = candidates[0][1]
+    if abs(best.accidental) > 1:
+        raise ValueError("Only single flat/sharp accidentals are supported for absolute-to-Roman conversion.")
+    return best
+
+
+def _parse_absolute_quality(raw_quality: str) -> dict[str, bool]:
+    quality = raw_quality.strip()
+    if not quality:
+        return {}
+    normalized = (
+        quality.replace("Δ", "maj")
+        .replace("°", "dim")
+        .replace("ø", "m7b5")
+        .replace(" ", "")
+        .lower()
+    )
+
+    if normalized in {"maj", "major"}:
+        return {}
+    if normalized in {"m", "min", "minor", "-"}:
+        return {"minor": True}
+    if normalized.startswith(("maj7", "ma7", "major7")):
+        return {"major7": True}
+    if normalized.startswith(("m7", "min7", "minor7", "-7")):
+        return {"minor": True, "dominant7": True}
+    if normalized in {"dim7", "o7"} or normalized.startswith("dim7"):
+        return {"diminished7": True}
+    if normalized in {"dim", "o"} or normalized.startswith("dim"):
+        return {"diminished": True}
+    if normalized in {"m7b5", "halfdim", "halfdim7", "half-dim", "half-dim7"}:
+        return {"diminished": True}
+    if normalized.startswith(("7", "9", "11", "13", "dom")):
+        return {"dominant7": True}
+    if normalized.startswith(("maj", "add", "sus", "6")):
+        return {}
+    if normalized.startswith(("m", "min", "-")):
+        return {"minor": True}
+    raise ValueError(
+        f"Unsupported chord quality '{raw_quality}'. Try major/minor, maj7, m7, 7, dim, or dim7."
+    )
+
+
+def parse_absolute_chord(token: str, key: str) -> Chord:
+    text = token.strip()
+    if not text:
+        raise ValueError("Empty chord token.")
+    match = ABSOLUTE_CHORD_RE.fullmatch(text)
+    if not match:
+        raise ValueError(f"Invalid absolute chord token: '{token}'")
+    letter, accidental, quality = match.groups()
+    note_name = _normalize_note_name(f"{letter}{accidental}")
+    semitone = NOTE_NAME_TO_SEMITONE[note_name]
+    if accidental in {"b", "♭"}:
+        accidental_hint = -1
+    elif accidental in {"#", "♯"}:
+        accidental_hint = 1
+    else:
+        accidental_hint = None
+    root = _best_root_for_absolute_note(semitone, key, accidental_hint=accidental_hint)
+    flags = _parse_absolute_quality(quality)
+    return Chord(root=root, **flags)
+
+
+def parse_timed_chord_token_with_parser(token: str, chord_parser: Callable[[str], Chord]) -> TimedChord:
     text = token.strip()
     if not text:
         raise ValueError("Empty chord token.")
@@ -221,14 +321,18 @@ def parse_timed_chord_token(token: str) -> TimedChord:
         chord_text = chord_text.strip()
         if not chord_text:
             raise ValueError(f"Missing chord before '@' in token: '{token}'")
-        return TimedChord(chord=parse_chord(chord_text), duration=parse_duration(duration_text))
+        return TimedChord(chord=chord_parser(chord_text), duration=parse_duration(duration_text))
 
-    return TimedChord(chord=parse_chord(text), duration=Fraction(1, 1))
+    return TimedChord(chord=chord_parser(text), duration=Fraction(1, 1))
 
 
-def parse_json_progression_item(item: Any) -> TimedChord:
+def parse_timed_chord_token(token: str) -> TimedChord:
+    return parse_timed_chord_token_with_parser(token, parse_chord)
+
+
+def parse_json_progression_item_with_parser(item: Any, chord_parser: Callable[[str], Chord]) -> TimedChord:
     if isinstance(item, str):
-        return parse_timed_chord_token(item)
+        return parse_timed_chord_token_with_parser(item, chord_parser)
 
     if not isinstance(item, dict):
         raise ValueError("JSON progression elements must be strings or objects.")
@@ -243,10 +347,14 @@ def parse_json_progression_item(item: Any) -> TimedChord:
         duration_value = item["dur"]
     else:
         if "@" in chord_value:
-            return parse_timed_chord_token(chord_value)
+            return parse_timed_chord_token_with_parser(chord_value, chord_parser)
         duration_value = 1
 
-    return TimedChord(chord=parse_chord(chord_value.strip()), duration=parse_duration(duration_value))
+    return TimedChord(chord=chord_parser(chord_value.strip()), duration=parse_duration(duration_value))
+
+
+def parse_json_progression_item(item: Any) -> TimedChord:
+    return parse_json_progression_item_with_parser(item, parse_chord)
 
 
 def _normalize_minor_case_chord_token(token: str) -> str:
@@ -276,6 +384,7 @@ def parse_chord_grid_notation(
     *,
     beats_per_bar: int = DEFAULT_BEATS_PER_BAR,
     max_subdivisions: int = MAX_GRID_SUBDIVISIONS,
+    chord_parser: Callable[[str], Chord] = parse_chord,
 ) -> list[TimedChord]:
     text = raw.strip()
     if not text:
@@ -307,7 +416,7 @@ def parse_chord_grid_notation(
             subdivision_counts.append(len(beat_slots))
             slot_duration = Fraction(1, len(beat_slots))
             for part in beat_slots:
-                slots.append((parse_chord(part), slot_duration))
+                slots.append((chord_parser(part), slot_duration))
 
     if text[last_end:].strip():
         raise ValueError("Unexpected text outside bar delimiters '|'.")
@@ -394,19 +503,24 @@ def timed_progression_to_grid_notation(
     return "\n".join(bars)
 
 
-def parse_progression_text(raw: str, notation_mode: str = "auto") -> tuple[list[TimedChord], str]:
+def parse_progression_text(
+    raw: str,
+    notation_mode: str = "auto",
+    *,
+    chord_parser: Callable[[str], Chord] = parse_chord,
+) -> tuple[list[TimedChord], str]:
     mode = notation_mode.strip().lower()
     if mode not in {"auto", "duration", "grid"}:
         raise ValueError('notation_mode must be "auto", "duration", or "grid".')
 
     if mode == "grid":
-        return parse_chord_grid_notation(raw), "grid"
+        return parse_chord_grid_notation(raw, chord_parser=chord_parser), "grid"
     if mode == "duration":
-        return parse_progression_arg(raw), "duration"
+        return parse_progression_arg(raw, chord_parser=chord_parser), "duration"
 
     if looks_like_chord_grid_notation(raw):
-        return parse_chord_grid_notation(raw), "grid"
-    return parse_progression_arg(raw), "duration"
+        return parse_chord_grid_notation(raw, chord_parser=chord_parser), "grid"
+    return parse_progression_arg(raw, chord_parser=chord_parser), "duration"
 
 
 def timed_chord_tokens(chords: Sequence[TimedChord]) -> tuple[str, ...]:
@@ -451,6 +565,8 @@ def realize_chord(chord: Chord, key: str) -> str:
         return f"{root_name}°7"
     if chord.diminished:
         return f"{root_name}°"
+    if chord.major7:
+        return f"{root_name}maj7"
     if chord.dominant7:
         return f"{root_name}m7" if chord.minor else f"{root_name}7"
     if chord.minor:
@@ -482,6 +598,8 @@ def standard_voicing_intervals(chord: Chord) -> tuple[int, ...]:
         return STANDARD_VOICING_INTERVALS["diminished7"]
     if chord.diminished:
         return STANDARD_VOICING_INTERVALS["diminished"]
+    if chord.major7:
+        return STANDARD_VOICING_INTERVALS["major7"]
     if chord.dominant7 and chord.minor:
         return STANDARD_VOICING_INTERVALS["minor7"]
     if chord.dominant7:
@@ -1222,14 +1340,27 @@ def debug_one_step(tokens: Sequence[str | TimedChord]) -> list[dict[str, Any]]:
     ]
 
 
-def parse_progression_arg(raw: str) -> list[TimedChord]:
+def parse_progression_arg(
+    raw: str,
+    *,
+    chord_parser: Callable[[str], Chord] = parse_chord,
+) -> list[TimedChord]:
     raw = raw.strip()
     if raw.startswith("["):
         parsed = json.loads(raw)
         if not isinstance(parsed, list):
             raise ValueError("JSON progression must be an array.")
-        return [parse_json_progression_item(item) for item in parsed]
-    return [parse_timed_chord_token(part) for part in raw.split(",") if part.strip()]
+        return [parse_json_progression_item_with_parser(item, chord_parser) for item in parsed]
+    return [parse_timed_chord_token_with_parser(part, chord_parser) for part in raw.split(",") if part.strip()]
+
+
+def parse_absolute_progression_text(
+    raw: str,
+    key: str,
+    notation_mode: str = "auto",
+) -> tuple[list[TimedChord], str]:
+    parser = lambda token: parse_absolute_chord(token, key)
+    return parse_progression_text(raw, notation_mode, chord_parser=parser)
 
 
 def main() -> None:

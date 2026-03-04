@@ -6,6 +6,7 @@ from jazz_grammar import (
     explore_sequences_by_depth,
     find_next_steps,
     key_tonic_semitone,
+    parse_absolute_progression_text,
     parse_chord_grid_notation,
     parse_progression_text,
     parse_timed_chord_token,
@@ -20,6 +21,10 @@ class JazzGrammarTests(unittest.TestCase):
     def test_parse_accidental_minor7_with_duration(self) -> None:
         chord = parse_timed_chord_token("bIIm7@3/2")
         self.assertEqual(chord.to_token(), "bIIm7@3/2")
+
+    def test_parse_major7_with_duration(self) -> None:
+        chord = parse_timed_chord_token("Imaj7@1")
+        self.assertEqual(chord.to_token(), "Imaj7")
 
     def test_duplication_prolongation_splits_duration_equally(self) -> None:
         apps = find_next_steps(["I@4"])
@@ -93,8 +98,8 @@ class JazzGrammarTests(unittest.TestCase):
         self.assertEqual([item.to_token() for item in progression], ["I@3/2", "IIm@5/2"])
 
     def test_realize_progression_in_c_major(self) -> None:
-        realized = realize_progression(["I@1", "IV@1", "V7@2"], "C", show_unit_one=True)
-        self.assertEqual(realized, ["C@1", "F@1", "G7@2"])
+        realized = realize_progression(["Imaj7@1", "IV@1", "V7@2"], "C", show_unit_one=True)
+        self.assertEqual(realized, ["Cmaj7@1", "F@1", "G7@2"])
 
     def test_realize_progression_uses_flat_spelling_in_flat_keys(self) -> None:
         realized = realize_progression(["III@1"], "Gb", show_unit_one=True)
@@ -110,6 +115,7 @@ class JazzGrammarTests(unittest.TestCase):
 
     def test_chord_note_names_support_standard_qualities(self) -> None:
         self.assertEqual(chord_note_names(parse_timed_chord_token("I").chord, "C"), ["C", "E", "G", "C"])
+        self.assertEqual(chord_note_names(parse_timed_chord_token("Imaj7").chord, "C"), ["C", "E", "G", "B"])
         self.assertEqual(chord_note_names(parse_timed_chord_token("IIm").chord, "C"), ["D", "F", "A", "D"])
         self.assertEqual(chord_note_names(parse_timed_chord_token("V7").chord, "C"), ["G", "B", "D", "F"])
         self.assertEqual(chord_note_names(parse_timed_chord_token("IIm7").chord, "C"), ["D", "F", "A", "C"])
@@ -118,6 +124,7 @@ class JazzGrammarTests(unittest.TestCase):
 
     def test_chord_midi_notes_support_standard_qualities(self) -> None:
         self.assertEqual(chord_midi_notes(parse_timed_chord_token("I").chord, "C"), [48, 52, 55, 60])
+        self.assertEqual(chord_midi_notes(parse_timed_chord_token("Imaj7").chord, "C"), [48, 52, 55, 59])
         self.assertEqual(chord_midi_notes(parse_timed_chord_token("IIm").chord, "C"), [50, 53, 57, 62])
         self.assertEqual(chord_midi_notes(parse_timed_chord_token("V7").chord, "C"), [55, 59, 62, 65])
         self.assertEqual(chord_midi_notes(parse_timed_chord_token("IIm7").chord, "C"), [50, 53, 57, 60])
@@ -131,6 +138,15 @@ class JazzGrammarTests(unittest.TestCase):
         self.assertAlmostEqual(events[0]["bars"], 0.25)
         self.assertEqual(events[1]["notes"], [55, 59, 62, 65])
         self.assertAlmostEqual(events[1]["bars"], 0.5)
+
+    def test_parse_absolute_progression_to_roman(self) -> None:
+        progression, mode = parse_absolute_progression_text("Cmaj7@1, Dm7@1, G7@2", "C")
+        self.assertEqual(mode, "duration")
+        self.assertEqual([item.to_token() for item in progression], ["Imaj7", "IIm7", "V7@2"])
+
+    def test_parse_absolute_progression_supports_flats_and_sharps(self) -> None:
+        progression, _ = parse_absolute_progression_text("Bb7@1, F#m7@1", "C")
+        self.assertEqual([item.to_token() for item in progression], ["bVII7", "#IVm7"])
 
 
 if __name__ == "__main__":

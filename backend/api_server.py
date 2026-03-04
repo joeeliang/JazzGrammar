@@ -24,6 +24,7 @@ try:
         find_next_steps,
         format_duration,
         key_tonic_semitone,
+        parse_absolute_progression_text,
         parse_progression_text,
         parse_timed_chord_token,
         realize_chord,
@@ -37,6 +38,7 @@ except ModuleNotFoundError:
         find_next_steps,
         format_duration,
         key_tonic_semitone,
+        parse_absolute_progression_text,
         parse_progression_text,
         parse_timed_chord_token,
         realize_chord,
@@ -242,6 +244,13 @@ def _display_key(payload: dict[str, Any]) -> str:
     return key.strip()
 
 
+def _input_mode(payload: dict[str, Any]) -> str:
+    mode = str(payload.get("inputMode", "roman")).strip().lower()
+    if mode not in {"roman", "absolute"}:
+        raise ValueError('inputMode must be "roman" or "absolute".')
+    return mode
+
+
 def _parse_progression_text(payload: dict[str, Any]) -> str:
     progression = payload.get("progression", "")
     if not isinstance(progression, str) or not progression.strip():
@@ -292,23 +301,39 @@ def _timed_tokens_for_unit(
     return [realize_timed_chord(item, display_key, show_unit_one=True) for item in display_timed]
 
 
-def _parse_request(payload: dict[str, Any]) -> tuple[list[TimedChord], str, Fraction, str, str, str]:
+def _parse_request(payload: dict[str, Any]) -> tuple[list[TimedChord], str, Fraction, str, str, str, str]:
     progression_text = _parse_progression_text(payload)
     duration_unit = _duration_unit(payload)
     input_duration_unit = _input_duration_unit(payload, duration_unit)
     beats_per_bar = _beats_per_bar(payload)
     requested_notation = _notation_mode(payload)
+    input_mode = _input_mode(payload)
     display_mode = _display_mode(payload)
     display_key = _display_key(payload)
     key_tonic_semitone(display_key)
-    raw_progression, parsed_notation = parse_progression_text(progression_text, requested_notation)
+    if input_mode == "absolute":
+        raw_progression, parsed_notation = parse_absolute_progression_text(
+            progression_text,
+            display_key,
+            requested_notation,
+        )
+    else:
+        raw_progression, parsed_notation = parse_progression_text(progression_text, requested_notation)
     progression_in_beats = _convert_to_grammar_units(
         raw_progression,
         input_duration_unit,
         beats_per_bar,
         parsed_notation,
     )
-    return progression_in_beats, duration_unit, beats_per_bar, parsed_notation, display_mode, display_key
+    return (
+        progression_in_beats,
+        duration_unit,
+        beats_per_bar,
+        parsed_notation,
+        display_mode,
+        display_key,
+        input_mode,
+    )
 
 
 def _grid_for_tokens(tokens_in_beats: Sequence[str]) -> str:
@@ -351,6 +376,7 @@ async def parse(payload: dict[str, Any] | None = Body(default=None)) -> dict[str
             notation_mode,
             display_mode,
             display_key,
+            input_mode,
         ) = _parse_request(request_payload)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -378,6 +404,7 @@ async def parse(payload: dict[str, Any] | None = Body(default=None)) -> dict[str
             "beatsPerBar": str(beats_per_bar),
             "displayMode": display_mode,
             "displayKey": display_key,
+            "inputMode": input_mode,
         },
     }
 
@@ -393,6 +420,7 @@ async def suggest(payload: dict[str, Any] | None = Body(default=None)) -> dict[s
             notation_mode,
             display_mode,
             display_key,
+            input_mode,
         ) = _parse_request(request_payload)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -484,6 +512,7 @@ async def suggest(payload: dict[str, Any] | None = Body(default=None)) -> dict[s
             "beatsPerBar": str(beats_per_bar),
             "displayMode": display_mode,
             "displayKey": display_key,
+            "inputMode": input_mode,
         },
     }
 
