@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { JazzyChordEngine, defaultSynthParams } from "./audio/jazzyChordEngine";
+import FretboardChordInput from "./components/FretboardChordInput";
 
 const DEFAULT_PROGRESSION = "I@1, IV@1, V7@2";
 const DEFAULT_ABSOLUTE_PROGRESSION = "Cmaj7@1, Dm7@1, G7@2";
@@ -889,6 +890,18 @@ export default function App() {
     }
   }
 
+  function handleUseDetectedChord(chordToken) {
+    if (!chordToken) return;
+    const nextToken = `${chordToken}@1`;
+    setProgressionInput((prev) => {
+      const trimmed = String(prev || "").trim();
+      if (!trimmed) return nextToken;
+      return `${trimmed}, ${nextToken}`;
+    });
+    setInputMode("absolute");
+    setInfo(`Detected ${chordToken}. Added to progression input.`);
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -1106,6 +1119,11 @@ export default function App() {
           </aside>
         )}
       </div>
+
+      <FretboardChordInput
+        displayKey={displayKey}
+        onUseDetectedChord={handleUseDetectedChord}
+      />
     </div>
   );
 }
