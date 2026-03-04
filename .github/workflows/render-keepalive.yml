@@ -1,0 +1,40 @@
+name: Keep Render Backend Awake
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping-healthcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend healthcheck endpoint
+        env:
+          HEALTHCHECK_URL: ${{ secrets.RENDER_HEALTHCHECK_URL }}
+        run: |
+          if [ -z "$HEALTHCHECK_URL" ]; then
+            echo "::error::Missing repository secret RENDER_HEALTHCHECK_URL"
+            exit 1
+          fi
+
+          echo "UTC time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "Pinging configured healthcheck endpoint"
+
+          http_status=$(curl -sS \
+            --max-time 20 \
+            --retry 2 \
+            --retry-delay 2 \
+            --output response_body.txt \
+            --write-out '%{http_code}' \
+            "$HEALTHCHECK_URL")
+
+          echo "HTTP status: $http_status"
+          echo "Response (first 300 bytes):"
+          head -c 300 response_body.txt || true
+          echo
+
+          if [ "$http_status" -lt 200 ] || [ "$http_status" -ge 400 ]; then
+            echo "::error::Healthcheck failed with status $http_status"
+            exit 1
+          fi

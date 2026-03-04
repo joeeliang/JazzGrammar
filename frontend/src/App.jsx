@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { JazzyChordEngine } from "./audio/jazzyChordEngine";
+import { JazzyChordEngine, defaultSynthParams } from "./audio/jazzyChordEngine";
 
 const DEFAULT_PROGRESSION = "I@1, IV@1, V7@2";
 const KEY_OPTIONS = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
@@ -13,6 +13,20 @@ const DEFAULT_CFG = {
   labelPadY: 6,
   collisionPadding: 12
 };
+const SOUND_PARAM_CONFIG = [
+  { key: "bpm", label: "BPM", min: 60, max: 180, step: 1 },
+  { key: "strumMs", label: "Strum (ms)", min: 0, max: 100, step: 1 },
+  { key: "attackMs", label: "Attack (ms)", min: 5, max: 220, step: 1 },
+  { key: "releaseMs", label: "Release (ms)", min: 120, max: 1800, step: 10 },
+  { key: "cutoffHz", label: "Cutoff (Hz)", min: 500, max: 6000, step: 10 },
+  { key: "filterQ", label: "Filter Q", min: 0.2, max: 4, step: 0.1 },
+  { key: "detuneCents", label: "Detune (cents)", min: 0, max: 24, step: 1 },
+  { key: "harmonicMix", label: "Harmonic mix", min: 0, max: 1, step: 0.01 },
+  { key: "masterVolume", label: "Master volume", min: 0.1, max: 1, step: 0.01 },
+  { key: "voicePeak", label: "Voice peak", min: 0.08, max: 0.5, step: 0.01 },
+  { key: "leadInMs", label: "Lead-in (ms)", min: 0, max: 250, step: 1 },
+  { key: "endPadMs", label: "End pad (ms)", min: 40, max: 600, step: 5 }
+];
 
 const BOX_COLORS = [
   { stroke: "#6f7fff", fill: "rgba(99, 116, 255, 0.12)" },
@@ -43,6 +57,12 @@ function durationInBeats(token) {
   }
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : 1;
+}
+
+function clampParam(raw, min, max, fallback) {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
 }
 
 async function postJSON(path, payload) {
@@ -531,10 +551,12 @@ export default function App() {
   const [selectedSuggestionId, setSelectedSuggestionId] = useState("");
   const [selectedChord, setSelectedChord] = useState(null);
   const [playingLayerIndex, setPlayingLayerIndex] = useState(null);
+  const [soundParams, setSoundParams] = useState({ ...defaultSynthParams });
   const synthRef = useRef(null);
   const playbackTimerRef = useRef(null);
 
   const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(true);
+  const [isSoundPanelOpen, setIsSoundPanelOpen] = useState(false);
   const [centerSignal, setCenterSignal] = useState(0);
 
   const currentLayer = layers.length > 0 ? layers[layers.length - 1] : null;
@@ -604,6 +626,27 @@ export default function App() {
     });
   }
 
+  function handleSoundParamChange(paramKey, rawValue) {
+    const config = SOUND_PARAM_CONFIG.find((item) => item.key === paramKey);
+    if (!config) return;
+    setSoundParams((prev) => {
+      const nextValue = clampParam(rawValue, config.min, config.max, prev[paramKey]);
+      const nextParams = { ...prev, [paramKey]: nextValue };
+      if (synthRef.current) {
+        synthRef.current.setParams(nextParams);
+      }
+      return nextParams;
+    });
+  }
+
+  function handleResetSoundParams() {
+    const nextParams = { ...defaultSynthParams };
+    setSoundParams(nextParams);
+    if (synthRef.current) {
+      synthRef.current.setParams(nextParams);
+    }
+  }
+
   function canPlayLayer(layerData) {
     if (!layerData || !Array.isArray(layerData.progressionEvents)) return false;
     return layerData.progressionEvents.some((event) => (
@@ -641,7 +684,7 @@ export default function App() {
     try {
       setError("");
       setPlayingLayerIndex(layerIndex);
-      const result = await synth.play(layerData.progressionEvents);
+      const result = await synth.play(layerData.progressionEvents, soundParams);
       const durationMs = Math.max(120, Math.ceil((result?.durationSec || 0) * 1000) + 140);
       playbackTimerRef.current = window.setTimeout(() => {
         setPlayingLayerIndex(null);
@@ -904,12 +947,58 @@ export default function App() {
           <button
             type="button"
             className="btn-secondary"
+            onClick={() => setIsSoundPanelOpen((prev) => !prev)}
+          >
+            {isSoundPanelOpen ? "Hide" : "Show"} sound
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
             onClick={() => setIsSuggestionsOpen((prev) => !prev)}
           >
             {isSuggestionsOpen ? "Hide" : "Show"} suggestions
           </button>
         </div>
       </header>
+
+      {isSoundPanelOpen && (
+        <section className="sound-panel" aria-label="Sound controls">
+          <div className="sound-panel-header">
+            <h3>Sound Parameters</h3>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={handleResetSoundParams}
+            >
+              Reset
+            </button>
+          </div>
+          <div className="sound-grid">
+            {SOUND_PARAM_CONFIG.map((config) => (
+              <label className="sound-control" key={config.key} htmlFor={`sound-${config.key}`}>
+                <span>{config.label}</span>
+                <input
+                  id={`sound-${config.key}`}
+                  type="range"
+                  min={config.min}
+                  max={config.max}
+                  step={config.step}
+                  value={soundParams[config.key]}
+                  onChange={(event) => handleSoundParamChange(config.key, event.target.value)}
+                />
+                <input
+                  type="number"
+                  min={config.min}
+                  max={config.max}
+                  step={config.step}
+                  value={soundParams[config.key]}
+                  onChange={(event) => handleSoundParamChange(config.key, event.target.value)}
+                />
+              </label>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="workspace">
         <main className="canvas-shell" aria-label="Chord progression tree view">

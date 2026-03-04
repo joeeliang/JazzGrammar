@@ -7,7 +7,10 @@ const PARAM_LIMITS = {
   filterQ: [0.2, 4],
   detuneCents: [0, 24],
   harmonicMix: [0, 1],
-  masterVolume: [0.1, 1]
+  masterVolume: [0.1, 1],
+  voicePeak: [0.08, 0.5],
+  leadInMs: [0, 250],
+  endPadMs: [40, 600]
 };
 
 const DEFAULT_PARAMS = {
@@ -19,7 +22,10 @@ const DEFAULT_PARAMS = {
   filterQ: 0.8,
   detuneCents: 5,
   harmonicMix: 0.35,
-  masterVolume: 0.72
+  masterVolume: 0.72,
+  voicePeak: 0.24,
+  leadInMs: 50,
+  endPadMs: 120
 };
 
 function clamp(value, min, max, fallback) {
@@ -145,7 +151,7 @@ export class JazzyChordEngine {
     harmonicGain.connect(noteGain);
     noteGain.connect(this.masterGain);
 
-    const peak = 0.24;
+    const peak = this.params.voicePeak;
     const noteEnd = Math.max(startAt + 0.03, startAt + durationSec);
     const peakAt = Math.min(startAt + attackSec, noteEnd - 0.005);
     const releaseStart = Math.min(noteEnd - 0.001, Math.max(peakAt + 0.005, noteEnd - releaseSec));
@@ -183,7 +189,7 @@ export class JazzyChordEngine {
     const strumSec = this.params.strumMs / 1000;
     const releaseSec = this.params.releaseMs / 1000;
 
-    let cursor = this.audioContext.currentTime + 0.05;
+    let cursor = this.audioContext.currentTime + (this.params.leadInMs / 1000);
     const startCursor = cursor;
 
     this.playing = true;
@@ -214,7 +220,7 @@ export class JazzyChordEngine {
       this.activeVoices = [];
       return { durationSec: 0 };
     }
-    const totalTailMs = Math.ceil(durationSec * 1000) + 120;
+    const totalTailMs = Math.ceil(durationSec * 1000) + this.params.endPadMs;
 
     if (this.endedTimer) {
       window.clearTimeout(this.endedTimer);

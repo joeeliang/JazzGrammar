@@ -104,6 +104,63 @@ button {
   margin-left: auto;
 }
 
+.sound-panel {
+  border-bottom: 1px solid rgb(226 232 240 / 70%);
+  background: rgb(249 250 251 / 96%);
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sound-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sound-panel-header h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2c3d55;
+}
+
+.sound-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px 12px;
+}
+
+.sound-control {
+  display: grid;
+  grid-template-columns: 1fr 90px 64px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #3d4e66;
+}
+
+.sound-control > span {
+  font-weight: 500;
+}
+
+.sound-control input[type="range"] {
+  width: 100%;
+  margin: 0;
+}
+
+.sound-control input[type="number"] {
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  color: #1d293d;
+  font-size: 11px;
+  padding: 2px 6px;
+}
+
 button {
   border-radius: 4px;
   border: 1px solid transparent;
@@ -453,6 +510,11 @@ button:disabled {
 @media (max-width: 980px) {
   .app-shell {
     overflow: auto;
+  }
+
+  .sound-control {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
 
   .topbar {

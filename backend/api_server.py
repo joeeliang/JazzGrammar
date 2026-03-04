@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import argparse
 from fractions import Fraction
+import logging
 import os
 from pathlib import Path
+import time
 from typing import Any, Sequence
+import uuid
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import uvicorn
 
 try:
@@ -71,6 +74,25 @@ def _load_local_env_files() -> None:
 _load_local_env_files()
 
 
+def _configure_logging() -> None:
+    level_name = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
+    else:
+        root_logger.setLevel(level)
+    logging.getLogger("uvicorn.access").setLevel(level)
+    logging.getLogger("uvicorn.error").setLevel(level)
+
+
+_configure_logging()
+logger = logging.getLogger("jazz_grammar.api")
+
+
 def _parse_cors_origins() -> list[str]:
     """Default to wildcard for quick setup; override with comma-separated origins."""
     raw = os.getenv("CORS_ALLOW_ORIGINS", "*").strip()
@@ -89,19 +111,76 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def _log_requests(request: Request, call_next: Any) -> Response:
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+    method = request.method
+    path = request.url.path
+    client_ip = request.client.host if request.client else "-"
+    start_time = time.perf_counter()
+
+    logger.info(
+        "request.start id=%s method=%s path=%s client=%s",
+        request_id,
+        method,
+        path,
+        client_ip,
+    )
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        logger.exception(
+            "request.error id=%s method=%s path=%s client=%s duration_ms=%s",
+            request_id,
+            method,
+            path,
+            client_ip,
+            duration_ms,
+        )
+        raise
+
+    duration_ms = int((time.perf_counter() - start_time) * 1000)
+    logger.info(
+        "request.end id=%s method=%s path=%s client=%s status=%s duration_ms=%s",
+        request_id,
+        method,
+        path,
+        client_ip,
+        response.status_code,
+        duration_ms,
+    )
+    response.headers["x-request-id"] = request_id
+    return response
+
+
 @app.exception_handler(HTTPException)
-async def _http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
+async def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    logger.warning(
+        "request.http_exception method=%s path=%s status=%s detail=%s",
+        request.method,
+        request.url.path,
+        exc.status_code,
+        exc.detail,
+    )
     if exc.status_code == 404:
         return JSONResponse(status_code=404, content={"error": "Not found."})
     return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
 
 
 @app.exception_handler(RequestValidationError)
-async def _validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+async def _validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     message = "Invalid request payload."
     if exc.errors():
         first = exc.errors()[0]
         message = first.get("msg") or message
+    logger.warning(
+        "request.validation_error method=%s path=%s detail=%s",
+        request.method,
+        request.url.path,
+        message,
+    )
     return JSONResponse(status_code=400, content={"error": message})
 
 
