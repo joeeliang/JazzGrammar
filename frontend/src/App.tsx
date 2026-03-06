@@ -75,7 +75,7 @@ export default function App() {
       }
       
       if (target) {
-        if (target.parent?.data?.id === 'super-root') {
+        if (!target.parent) {
           setCurrentPreviewLabels([]);
           return;
         }
@@ -327,18 +327,15 @@ export default function App() {
       displayTrees.forEach((tree: any) => injectGhosts(tree));
     }
 
-    // Create a dummy super-root to use d3.hierarchy and tree layout on multiple trees
-    const superRootData: TreeNode = { id: 'super-root', label: '', children: displayTrees };
-    const root = d3.hierarchy(superRootData);
-    
+    // Build separate hierarchies per bar to avoid a visual super-root
+    const roots = displayTrees.map((tree: any) => d3.hierarchy(tree));
+
     // We don't actually use treeLayout for positioning anymore, we use force simulation
     // but we still need the hierarchy to get links and descendants
-    const newNodes = root.descendants();
-    const newLinks = root.links();
-    const visibleNodes = newNodes.filter(d => d.data.id !== 'super-root');
-    const visibleLinks = newLinks.filter(
-      (l: any) => l.source.data.id !== 'super-root' && l.target.data.id !== 'super-root'
-    );
+    const newNodes = roots.flatMap(r => r.descendants());
+    const newLinks = roots.flatMap(r => r.links());
+    const visibleNodes = newNodes;
+    const visibleLinks = newLinks;
 
     // If simulation doesn't exist, create it
     if (!simulationRef.current) {
@@ -364,7 +361,7 @@ export default function App() {
         d.vy = old.vy;
       } else {
         // New node: spawn slightly below parent with deterministic X offset to prevent crossing
-        if (d.parent && d.parent.data.id !== 'super-root') {
+        if (d.parent) {
           const parentInSim = nodeMap.get(d.parent.data.id) || d.parent;
           const siblings = d.parent.children || [];
           const index = siblings.indexOf(d);
@@ -386,7 +383,7 @@ export default function App() {
 
       // Anchor the root nodes to prevent drifting if they were manually placed
       // but the user wants them to be at the same layer (y=0)
-      if (d.parent && d.parent.data.id === 'super-root') {
+      if (!d.parent) {
         d.fy = 0;
         // We don't fix fx so they can balance horizontally
       }
@@ -397,12 +394,12 @@ export default function App() {
     
     // Add a Y force that pulls to the layer level (Constant gap)
     const LAYER_GAP = 120;
-    const maxDepth = d3.max(newNodes, d => d.depth - 1) || 0;
+    const maxDepth = d3.max(newNodes, d => d.depth) || 0;
     const terminalY = (maxDepth + 1) * LAYER_GAP;
 
     simulation.force('y', d3.forceY<any>((d: any) => {
       if (d.data.id === selectedGhostId) return terminalY;
-      return (d.depth - 1) * LAYER_GAP;
+      return d.depth * LAYER_GAP;
     }).strength(0.12));
     
     // Add a centering force to pull everything toward the middle
@@ -433,7 +430,7 @@ export default function App() {
       .attr('opacity', 1);
 
     // Render Terminal Links
-    const leaves = root.leaves().filter(d => !d.data.isPreview);
+    const leaves = roots.flatMap(r => r.leaves()).filter(d => !d.data.isPreview);
     const terminalLink = g.selectAll<SVGLineElement, any>('.terminal-link')
       .data(leaves, (d: any) => d.data.id);
 
@@ -485,7 +482,7 @@ export default function App() {
       event.stopPropagation();
       setContextMenu(null);
 
-      if (interactionMode === 'pointer' && d.parent?.data?.id === 'super-root') {
+      if (interactionMode === 'pointer' && !d.parent) {
         return;
       }
 
@@ -516,7 +513,7 @@ export default function App() {
     .on('contextmenu', (event, d) => {
       event.preventDefault();
       event.stopPropagation();
-      if (!d.parent || d.parent.data.id === 'super-root') {
+      if (!d.parent) {
         setContextMenu({
           x: event.clientX,
           y: event.clientY,
@@ -623,10 +620,10 @@ export default function App() {
           ? Math.max(sMax, hasGhosts ? x + ghostRadius : sMax) 
           : x + 5;
       };
-      updateExtents(root);
+      roots.forEach(r => updateExtents(r));
 
       // 2. Physics: Sibling Subtree Separation & Parent Centering
-      root.descendants().forEach((d: any) => {
+      roots.forEach((r: any) => r.descendants().forEach((d: any) => {
         // A. Separate siblings
         if (d.children && d.children.length > 1) {
           for (let i = 0; i < d.children.length - 1; i++) {
@@ -700,7 +697,7 @@ export default function App() {
             });
           }
         }
-      });
+      }));
 
       // 4. Render Updates & Strict Y enforcement
       const LAYER_GAP = 120;
