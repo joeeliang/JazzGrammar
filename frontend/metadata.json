@@ -1,0 +1,5 @@
+{
+  "name": "Harmonic Analysis Tree Generator",
+  "description": "A D3.js powered tool to generate and manipulate hierarchical binary trees for musical or scientific analysis.",
+  "requestFramePermissions": []
+}

@@ -1,0 +1,16 @@
+@import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "Libre Baskerville", serif;
+}
+
+body {
+  background-color: #fcfcfc;
+  color: #1a1a1a;
+  overflow: hidden;
+}
+
+.scientific-text {
+  font-family: var(--font-serif);
+}
