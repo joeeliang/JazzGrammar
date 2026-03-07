@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import List
 
 from fastapi import FastAPI, HTTPException
@@ -42,9 +43,15 @@ class FretboardOverlapPayload(BaseModel):
 
 app = FastAPI(title="Chord Progression API")
 
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins or ["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
