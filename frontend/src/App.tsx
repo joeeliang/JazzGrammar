@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { Plus, Minus, RefreshCw, Download, MousePointer2, PlusCircle, Pencil } from 'lucide-react';
+import { Download, Minus, MousePointer2, Plus, PlusCircle, RefreshCw } from 'lucide-react';
+import TranslucentFretboard, { FretboardOverlapData } from './guitar';
 
 interface TreeNode {
   id: string;
@@ -16,958 +17,1444 @@ interface TreeNode {
   isPreview?: boolean;
 }
 
+interface SuggestionItem {
+  symbol: string;
+  roman: string;
+  label: string;
+  why: string;
+}
+
+interface ChordSuggestion {
+  index: number;
+  input: string;
+  roman: string;
+  key: string;
+  items: SuggestionItem[];
+}
+
+interface SuggestionResponse {
+  input_chords: string[];
+  inferred_keys: string[];
+  suggestions: ChordSuggestion[];
+}
+
+interface LeafChordEntry {
+  nodeId: string;
+  label: string;
+  x: number;
+  barIndex: number;
+  leafIndex: number;
+}
+
+interface KeyRegionCloud {
+  regionIndex: number;
+  startBarIndex: number;
+  endBarIndex: number;
+  key: string;
+}
+
+interface ContextMenuState {
+  x: number;
+  y: number;
+  type: 'background' | 'root';
+  nodeId?: string;
+}
+
+type InteractionMode = 'pointer' | 'adder';
+
+type PositionedNode = d3.HierarchyPointNode<TreeNode> & {
+  layoutX: number;
+  layoutY: number;
+  subtreeMinX: number;
+  subtreeMaxX: number;
+};
+
+type PositionedLink = {
+  source: PositionedNode;
+  target: PositionedNode;
+};
+
+const VIEWBOX_WIDTH = 1800;
+const VIEWBOX_HEIGHT = 1100;
+const MARGIN = { top: 140, right: 180, bottom: 220, left: 180 };
+const HORIZONTAL_STEP = 92;
+const LAYER_GAP = 140;
+const BAR_GAP = 220;
+const MIN_BAR_WIDTH = 280;
+const NODE_RADIUS = 6;
+const TRANSITION_MS = 550;
+
+// Tunable visual parameters for key-region clouds.
+// cloudHorizontalPadding: extra horizontal space beyond the region subtree width.
+// cloudTopOffset: moves the cloud up/down relative to the root row (negative = higher).
+// cloudBottomExtra: extra space below the terminal chord labels.
+// cloudCornerRadius: roundness of the territory bubble.
+// cloudFillOpacity/cloudStrokeOpacity: transparency balance of cloud fill and outline.
+// cloudStrokeWidth: bubble border thickness.
+// cloudLabelXInset/cloudLabelY: key label position inside each cloud.
+const KEY_REGION_VISUALS = {
+  cloudHorizontalPadding: 48,
+  cloudTopOffset: -58,
+  cloudBottomExtra: 72,
+  cloudCornerRadius: 36,
+  cloudFillOpacity: 0.2,
+  cloudStrokeOpacity: 0.45,
+  cloudStrokeWidth: 1.2,
+  cloudLabelXInset: 18,
+  cloudLabelY: -22,
+} as const;
+
+// Muted palette; clouds cycle by contiguous key-region index (not by key name).
+const KEY_REGION_COLORS = ['#c8d3e0', '#d9d2c6', '#ccd9cf', '#d5cfe0', '#d8d8c8', '#c9d9d9'];
+
 const MUSICAL_LABELS = ['I', 'ii', 'iii', 'IV', 'V', 'vi', 'vii°', 'V⁷', 'ii⁷', 'vi⁷', 'IV⁶', 'I⁶', 'V/V', 'V/IV'];
 const CHORD_NAMES = ['C', 'Dm', 'Em', 'F', 'G', 'Am', 'Bdim', 'G7', 'Dm7', 'Am7', 'F6', 'Cmaj7', 'Fm', 'Gm7'];
+const PROGRESSION_API_URL = (import.meta.env.VITE_PROGRESSION_API_URL as string | undefined)?.trim() || 'http://localhost:8000/progression';
+const SUGGESTIONS_API_URL = (import.meta.env.VITE_SUGGESTIONS_API_URL as string | undefined)?.trim() || 'http://localhost:8000/suggestions';
+const OVERLAP_API_URL = (import.meta.env.VITE_OVERLAP_API_URL as string | undefined)?.trim() || 'http://localhost:8000/fretboard-overlap';
 
 const EXPANSION_OPTIONS: Record<string, string[][]> = {
-  'I': [['vi', 'ii', 'V', 'I'], ['IV', 'vii°', 'iii', 'vi'], ['I', 'V', 'vi', 'IV']],
-  'V': [['ii', 'V', 'I', 'V'], ['vi', 'IV', 'I', 'V'], ['V/V', 'V', 'ii', 'V']],
-  'ii': [['vi', 'ii', 'V/V', 'V'], ['I', 'vi', 'ii', 'V'], ['ii⁷', 'V⁷', 'I', 'ii']],
-  'IV': [['I', 'IV', 'V', 'I'], ['ii', 'V', 'I', 'IV'], ['IV⁶', 'V⁷', 'I', 'IV']],
-  'vi': [['iii', 'vi', 'ii', 'V'], ['I', 'V', 'vi', 'iii'], ['vi⁷', 'ii⁷', 'V⁷', 'I']],
-  'root': [['I', 'IV', 'V', 'I'], ['vi', 'ii', 'V', 'I']],
+  I: [['vi', 'ii', 'V', 'I'], ['IV', 'vii°', 'iii', 'vi'], ['I', 'V', 'vi', 'IV']],
+  V: [['ii', 'V', 'I', 'V'], ['vi', 'IV', 'I', 'V'], ['V/V', 'V', 'ii', 'V']],
+  ii: [['vi', 'ii', 'V/V', 'V'], ['I', 'vi', 'ii', 'V'], ['ii⁷', 'V⁷', 'I', 'ii']],
+  IV: [['I', 'IV', 'V', 'I'], ['ii', 'V', 'I', 'IV'], ['IV⁶', 'V⁷', 'I', 'IV']],
+  vi: [['iii', 'vi', 'ii', 'V'], ['I', 'V', 'vi', 'iii'], ['vi⁷', 'ii⁷', 'V⁷', 'I']],
+  root: [['I', 'IV', 'V', 'I'], ['vi', 'ii', 'V', 'I']],
 };
+
+const cloneTrees = (trees: TreeNode[]) => JSON.parse(JSON.stringify(trees)) as TreeNode[];
 
 const generateRandomLabel = (isLeaf: boolean) => {
   const list = isLeaf ? CHORD_NAMES : MUSICAL_LABELS;
   return list[Math.floor(Math.random() * list.length)];
 };
 
+const getTreeDepth = (node: TreeNode): number => {
+  if (!node.children || node.children.length === 0) {
+    return 1;
+  }
+
+  return 1 + Math.max(...node.children.map(getTreeDepth));
+};
+
+const getMaxDepth = (trees: TreeNode[]) => {
+  if (trees.length === 0) {
+    return 1;
+  }
+
+  return Math.max(...trees.map(getTreeDepth));
+};
+
+const shouldShowInlineLabel = (node: d3.HierarchyNode<TreeNode>) =>
+  Boolean(node.data.isPreview || !node.parent || (node.children && node.children.length > 0));
+
+const estimateLabelSpan = (label: string, variant: 'node' | 'terminal') =>
+  variant === 'terminal' ? Math.max(54, label.length * 10 + 14) : Math.max(38, label.length * 8 + 14);
+
+const getNodeHalfWidth = (node: d3.HierarchyNode<TreeNode>) => {
+  const variant = shouldShowInlineLabel(node) ? 'node' : 'terminal';
+  return estimateLabelSpan(node.data.label, variant) / 2;
+};
+
+const translate = (x: number, y: number) => `translate(${x},${y})`;
+
+const linkPath = (source: PositionedNode, target: PositionedNode) => {
+  const midY = (source.layoutY + target.layoutY) / 2;
+  return `M${source.layoutX},${source.layoutY} C${source.layoutX},${midY} ${target.layoutX},${midY} ${target.layoutX},${target.layoutY}`;
+};
+
+const buildDisplayTrees = (trees: TreeNode[], selectedNodeId: string | null, previewLabels: string[]) => {
+  const displayTrees = cloneTrees(trees);
+
+  if (!selectedNodeId || previewLabels.length === 0) {
+    return displayTrees;
+  }
+
+  const injectGhosts = (node: TreeNode): boolean => {
+    if (node.id === selectedNodeId) {
+      const ghosts = previewLabels.map((label, index) => ({
+        id: `ghost-${selectedNodeId}-${index}`,
+        label,
+        isPreview: true,
+      }));
+
+      node.children = node.children ? [...node.children, ...ghosts] : ghosts;
+      return true;
+    }
+
+    if (!node.children) {
+      return false;
+    }
+
+    return node.children.some(injectGhosts);
+  };
+
+  displayTrees.forEach(injectGhosts);
+  return displayTrees;
+};
+
+const positionForest = (trees: TreeNode[], innerWidth: number) => {
+  const hierarchyRoots = trees.map((tree) => d3.hierarchy<TreeNode>(tree));
+  const treeLayout = d3
+    .tree<TreeNode>()
+    .nodeSize([HORIZONTAL_STEP, LAYER_GAP])
+    .separation((left, right) => {
+      const footprint = (getNodeHalfWidth(left) + getNodeHalfWidth(right)) / HORIZONTAL_STEP;
+
+      if (left.data.isPreview && right.data.isPreview) {
+        return 1.1 + footprint * 0.35;
+      }
+
+      return (left.parent === right.parent ? 1.45 : 1.95) + footprint * 0.35;
+    });
+
+  hierarchyRoots.forEach(treeLayout);
+
+  const layoutItems = hierarchyRoots.map((root, index) => {
+    const nodes = root.descendants() as PositionedNode[];
+    const minX = d3.min(nodes, (node) => node.x - getNodeHalfWidth(node)) ?? 0;
+    const maxX = d3.max(nodes, (node) => node.x + getNodeHalfWidth(node)) ?? 0;
+
+    return {
+      root: root as PositionedNode,
+      nodes,
+      minX,
+      maxX,
+      width: Math.max(maxX - minX, MIN_BAR_WIDTH),
+      desiredCenter:
+        typeof trees[index].initialX === 'number'
+          ? trees[index].initialX!
+          : index * (MIN_BAR_WIDTH + BAR_GAP),
+      center: 0,
+    };
+  });
+
+  const packedItems = [...layoutItems].sort((left, right) => left.desiredCenter - right.desiredCenter);
+  let previousRight = Number.NEGATIVE_INFINITY;
+
+  packedItems.forEach((item) => {
+    const halfWidth = item.width / 2;
+    const minimumCenter =
+      previousRight === Number.NEGATIVE_INFINITY ? item.desiredCenter : previousRight + BAR_GAP + halfWidth;
+
+    item.center = Math.max(item.desiredCenter, minimumCenter);
+    previousRight = item.center + halfWidth;
+  });
+
+  const globalMin = d3.min(packedItems, (item) => item.center + item.minX) ?? 0;
+  const globalMax = d3.max(packedItems, (item) => item.center + item.maxX) ?? innerWidth;
+  const contentWidth = Math.max(globalMax - globalMin, MIN_BAR_WIDTH);
+  const hasManualPlacement = trees.some((tree) => typeof tree.initialX === 'number');
+  const offsetX = !hasManualPlacement && contentWidth < innerWidth ? (innerWidth - contentWidth) / 2 - globalMin : -globalMin;
+
+  let maxDepth = 0;
+
+  layoutItems.forEach((item) => {
+    item.nodes.forEach((node) => {
+      node.layoutX = node.x + item.center + offsetX;
+      node.layoutY = node.y;
+      node.subtreeMinX = node.layoutX - getNodeHalfWidth(node);
+      node.subtreeMaxX = node.layoutX + getNodeHalfWidth(node);
+      maxDepth = Math.max(maxDepth, node.depth);
+    });
+  });
+
+  const updateBounds = (node: PositionedNode) => {
+    let minX = node.layoutX - getNodeHalfWidth(node);
+    let maxX = node.layoutX + getNodeHalfWidth(node);
+
+    const children = (node.children ?? []) as PositionedNode[];
+    children.forEach((child) => {
+      updateBounds(child);
+      minX = Math.min(minX, child.subtreeMinX);
+      maxX = Math.max(maxX, child.subtreeMaxX);
+    });
+
+    node.subtreeMinX = minX;
+    node.subtreeMaxX = maxX;
+  };
+
+  layoutItems.forEach((item) => updateBounds(item.root));
+
+  const nodes = layoutItems.flatMap((item) => item.nodes);
+  const links = layoutItems.flatMap((item) =>
+    item.root.links().map((link) => ({
+      source: link.source as PositionedNode,
+      target: link.target as PositionedNode,
+    })),
+  );
+  const leaves = layoutItems.flatMap((item) =>
+    item.root
+      .leaves()
+      .map((leaf) => leaf as PositionedNode)
+      .filter((leaf) => !leaf.data.isPreview),
+  );
+  const roots = layoutItems.map((item) => item.root);
+
+  return {
+    nodes,
+    links,
+    leaves,
+    roots,
+    terminalY: (maxDepth + 1) * LAYER_GAP,
+  };
+};
+
 export default function App() {
   const svgRef = useRef<SVGSVGElement>(null);
-  const [trees, setTrees] = useState<TreeNode[]>([
-    {
-      id: 'root-1',
-      label: 'Bar 1',
-      children: [
-        { id: '1', label: 'I', children: [{ id: '1-1', label: 'Cmaj7' }] },
-        { id: '2', label: 'I', children: [{ id: '2-1', label: 'C' }] }
-      ]
-    }
-  ]);
-  const [depth, setDepth] = useState(2);
+  const nodePositionRef = useRef(new Map<string, { x: number; y: number }>());
+
+  const [trees, setTrees] = useState<TreeNode[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedGhostId, setSelectedGhostId] = useState<string | null>(null);
   const [previewOptionIndex, setPreviewOptionIndex] = useState(0);
   const [currentPreviewLabels, setCurrentPreviewLabels] = useState<string[]>([]);
   const [showBoundingBoxes, setShowBoundingBoxes] = useState(false);
-  const [interactionMode, setInteractionMode] = useState<'pointer' | 'adder'>('pointer');
-  const [chordInput, setChordInput] = useState<{ nodeId: string, x: number, y: number } | null>(null);
-  
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-    type: 'background' | 'root';
-    nodeId?: string;
-  } | null>(null);
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>('pointer');
+  const [chordInput, setChordInput] = useState<{ nodeId: string; x: number; y: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+
+  const [isSendingProgression, setIsSendingProgression] = useState(false);
+  const [sendStatus, setSendStatus] = useState<string | null>(null);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
+  const [leafSubstitutionsByNodeId, setLeafSubstitutionsByNodeId] = useState<Record<string, string[]>>({});
+  const [keyRegionClouds, setKeyRegionClouds] = useState<KeyRegionCloud[]>([]);
+  const [fretboardOverlap, setFretboardOverlap] = useState<FretboardOverlapData | null>(null);
+  const [isLoadingOverlap, setIsLoadingOverlap] = useState(false);
+  const [overlapError, setOverlapError] = useState<string | null>(null);
+
+  const treeDepth = getMaxDepth(trees);
+
+  const setPreviewLabelsIfChanged = (nextLabels: string[]) => {
+    setCurrentPreviewLabels((prevLabels) => {
+      const sameLength = prevLabels.length === nextLabels.length;
+      const sameValues = sameLength && prevLabels.every((value, index) => value === nextLabels[index]);
+      return sameValues ? prevLabels : nextLabels;
+    });
+  };
+
+  const screenToDiagramPoint = (screenX: number, screenY: number) => {
+    const svg = svgRef.current;
+    if (!svg) {
+      return { x: 0, y: 0 };
+    }
+
+    const point = svg.createSVGPoint();
+    point.x = screenX;
+    point.y = screenY;
+
+    const screenMatrix = svg.getScreenCTM();
+    if (!screenMatrix) {
+      return { x: 0, y: 0 };
+    }
+
+    const svgPoint = point.matrixTransform(screenMatrix.inverse());
+    const zoomTransform = d3.zoomTransform(svg);
+    const [zoomedX, zoomedY] = zoomTransform.invert([svgPoint.x, svgPoint.y]);
+
+    return {
+      x: zoomedX - MARGIN.left,
+      y: zoomedY - MARGIN.top,
+    };
+  };
 
   useEffect(() => {
-    if (selectedNodeId) {
-      // Find the node in any of the trees
-      let target: d3.HierarchyNode<TreeNode> | undefined;
-      for (const tree of trees) {
-        const root = d3.hierarchy(tree);
-        const found = root.descendants().find(d => d.data.id === selectedNodeId);
-        if (found) {
-          target = found;
-          break;
-        }
-      }
-      
-      if (target) {
-        if (!target.parent) {
-          setCurrentPreviewLabels([]);
-          return;
-        }
-        const options = getOptions(target.data.label);
-        const currentOption = options[previewOptionIndex % options.length];
-        if (currentOption) {
-          const labels = currentOption[0] === 'Unitary Substitute' 
-            ? [generateRandomLabel(true), generateRandomLabel(true), generateRandomLabel(true), generateRandomLabel(true)] 
-            : currentOption;
-          setCurrentPreviewLabels(labels);
-        }
-      }
-    } else {
-      setCurrentPreviewLabels([]);
+    if (!selectedNodeId) {
+      setPreviewLabelsIfChanged([]);
+      return;
     }
-  }, [selectedNodeId, previewOptionIndex, trees]);
+
+    let target: d3.HierarchyNode<TreeNode> | undefined;
+
+    for (const tree of trees) {
+      const root = d3.hierarchy(tree);
+      const found = root.descendants().find((node) => node.data.id === selectedNodeId);
+      if (found) {
+        target = found;
+        break;
+      }
+    }
+
+    if (!target || !target.parent) {
+      setPreviewLabelsIfChanged([]);
+      return;
+    }
+
+    const isLeaf = !target.children || target.children.length === 0;
+    if (isLeaf) {
+      const substitutions = leafSubstitutionsByNodeId[target.data.id] || [];
+      if (substitutions.length > 0) {
+        setPreviewLabelsIfChanged(substitutions);
+        return;
+      }
+    }
+
+    const options = getOptions(target.data.label);
+    const currentOption = options[previewOptionIndex % options.length];
+
+    if (!currentOption) {
+      setPreviewLabelsIfChanged([]);
+      return;
+    }
+
+    const labels =
+      currentOption[0] === 'Unitary Substitute'
+        ? Array.from({ length: 4 }, () => generateRandomLabel(true))
+        : currentOption;
+
+    setPreviewLabelsIfChanged(labels);
+  }, [leafSubstitutionsByNodeId, previewOptionIndex, selectedNodeId, trees]);
 
   const handleExpansion = (nodeId: string, expansionLabels: string[]) => {
-    const newTrees = JSON.parse(JSON.stringify(trees));
+    const nextTrees = cloneTrees(trees);
     let idCounter = Date.now();
 
-    const findAndReplace = (node: TreeNode) => {
+    const findAndReplace = (node: TreeNode): boolean => {
       if (node.id === nodeId) {
-        node.children = expansionLabels.map((label, i) => ({
-          id: `${idCounter++}-${i}`,
-          label: label,
+        node.children = expansionLabels.map((label, index) => ({
+          id: `${idCounter++}-${index}`,
+          label,
         }));
         return true;
       }
-      if (node.children) {
-        for (const child of node.children) {
-          if (findAndReplace(child)) return true;
-        }
+
+      if (!node.children) {
+        return false;
       }
-      return false;
+
+      return node.children.some(findAndReplace);
     };
 
-    for (const tree of newTrees) {
-      if (findAndReplace(tree)) break;
-    }
-    
-    setTrees(newTrees);
+    nextTrees.some(findAndReplace);
+    setTrees(nextTrees);
+    setKeyRegionClouds([]);
+    setFretboardOverlap(null);
+    setOverlapError(null);
     setSelectedNodeId(null);
     setSelectedGhostId(null);
-
-    // Recalculate max depth across all trees
-    const getDepth = (n: TreeNode): number => {
-      if (!n.children || n.children.length === 0) return 1;
-      return 1 + Math.max(...n.children.map(getDepth));
-    };
-    const maxDepth = Math.max(...newTrees.map(getDepth));
-    setDepth(maxDepth);
   };
 
-  const addLayer = () => {
-    const newTrees = JSON.parse(JSON.stringify(trees));
-    let idCounter = Date.now();
+  const addAutumnLeavesSection = () => {
+    const section = [
+      ['Am7b5', 'D7'],
+      ['Gm'],
+      ['C7'],
+      ['Fmaj7'],
+      ['Bm7b5', 'E7'],
+      ['Am'],
+      ['D7'],
+      ['Gm'],
+    ];
 
-    const transformLeaves = (node: TreeNode) => {
-      if (!node.children || node.children.length === 0) {
-        const numChildren = Math.random() > 0.3 ? 2 : 1;
-        // Current leaf becomes an internal node, so give it a musical label
-        node.label = generateRandomLabel(false);
-        node.children = Array.from({ length: numChildren }, (_, i) => ({
-          id: `${idCounter++}-${i}`,
-          label: generateRandomLabel(true) // New children are leaves/terminal
-        }));
-      } else {
-        node.children.forEach(child => transformLeaves(child));
-      }
-    };
+    const baseBarNumber = trees.length + 1;
+    const now = Date.now();
+    const newBars: TreeNode[] = section.map((barChords, barOffset) => {
+      const barId = `root-${now}-${barOffset}`;
+      return {
+        id: barId,
+        label: `Bar ${baseBarNumber + barOffset}`,
+        children: barChords.map((chord, chordIndex) => ({
+          id: `${barId}-chord-${chordIndex}`,
+          label: chord,
+        })),
+      };
+    });
 
-    newTrees.forEach((tree: TreeNode) => transformLeaves(tree));
-    setTrees(newTrees);
-    setDepth(prev => prev + 1);
+    setTrees((prev) => [...prev, ...newBars]);
+    setKeyRegionClouds([]);
+    setFretboardOverlap(null);
+    setOverlapError(null);
+    setSelectedNodeId(null);
+    setSelectedGhostId(null);
   };
 
   const removeLayer = () => {
-    if (depth <= 1) return;
-    const newTrees = JSON.parse(JSON.stringify(trees));
+    if (treeDepth <= 1) {
+      return;
+    }
 
-    const removeDeepest = (node: TreeNode): boolean => {
-      if (!node.children) return false;
-      
-      // Check if children are leaves
-      const allChildrenAreLeaves = node.children.every(child => !child.children || child.children.length === 0);
-      
+    const nextTrees = cloneTrees(trees);
+
+    const removeDeepest = (node: TreeNode) => {
+      if (!node.children || node.children.length === 0) {
+        return;
+      }
+
+      const allChildrenAreLeaves = node.children.every((child) => !child.children || child.children.length === 0);
       if (allChildrenAreLeaves) {
         delete node.children;
-        return true;
-      } else {
-        node.children.forEach(child => removeDeepest(child));
-        return false;
+        return;
       }
+
+      node.children.forEach(removeDeepest);
     };
 
-    newTrees.forEach((tree: TreeNode) => removeDeepest(tree));
-    setTrees(newTrees);
-    setDepth(prev => prev - 1);
-  };
-
-  const resetTree = () => {
-    setTrees([
-      {
-        id: 'root-1',
-        label: 'Bar 1',
-        children: [
-          { id: '1', label: 'I', children: [{ id: '1-1', label: 'Cmaj7' }] },
-          { id: '2', label: 'I', children: [{ id: '2-1', label: 'C' }] }
-        ]
-      }
-    ]);
-    setDepth(2);
+    nextTrees.forEach(removeDeepest);
+    setTrees(nextTrees);
+    setKeyRegionClouds([]);
+    setFretboardOverlap(null);
+    setOverlapError(null);
     setSelectedNodeId(null);
     setSelectedGhostId(null);
   };
 
-  const addBar = (screenX: number, screenY: number) => {
-    if (!svgRef.current) return;
-    const svg = svgRef.current;
-    const pt = svg.createSVGPoint();
-    pt.x = screenX;
-    pt.y = screenY;
-    const svgP = pt.matrixTransform(svg.getScreenCTM()?.inverse());
+  const resetTree = () => {
+    nodePositionRef.current.clear();
+    setTrees([]);
+    setKeyRegionClouds([]);
+    setFretboardOverlap(null);
+    setOverlapError(null);
+    setSelectedNodeId(null);
+    setSelectedGhostId(null);
+    setContextMenu(null);
+    setChordInput(null);
+    setSendStatus(null);
+  };
 
-    // Adjust for main-group transform (margin.left, margin.top)
-    const initialX = svgP.x - 100; // margin.left is 100
-    
-    const newBar: TreeNode & { initialX?: number; initialY?: number } = {
+  const addBar = (screenX: number, screenY: number) => {
+    const { x } = screenToDiagramPoint(screenX, screenY);
+    const nextTrees = [...trees];
+
+    nextTrees.push({
       id: `root-${Date.now()}`,
-      label: `Bar ${trees.length + 1}`,
-      initialX: initialX,
-      initialY: 0
-    };
-    setTrees([...trees, newBar]);
+      label: `Bar ${nextTrees.length + 1}`,
+      initialX: x,
+      initialY: 0,
+    });
+
+    setTrees(nextTrees);
+    setKeyRegionClouds([]);
+    setFretboardOverlap(null);
+    setOverlapError(null);
     setContextMenu(null);
   };
 
   const addChord = (nodeId: string, chordLabel: string) => {
-    if (!chordLabel) return;
+    if (!chordLabel.trim()) {
+      return;
+    }
 
-    const newTrees = JSON.parse(JSON.stringify(trees));
-    const findAndAdd = (node: TreeNode) => {
+    const nextTrees = cloneTrees(trees);
+
+    const findAndAdd = (node: TreeNode): boolean => {
       if (node.id === nodeId) {
-        const newChord: TreeNode = {
+        const chord: TreeNode = {
           id: `chord-${Date.now()}`,
-          label: chordLabel
+          label: chordLabel.trim(),
         };
-        node.children = node.children ? [...node.children, newChord] : [newChord];
+
+        node.children = node.children ? [...node.children, chord] : [chord];
         return true;
       }
-      if (node.children) {
-        for (const child of node.children) {
-          if (findAndAdd(child)) return true;
-        }
+
+      if (!node.children) {
+        return false;
       }
-      return false;
+
+      return node.children.some(findAndAdd);
     };
 
-    for (const tree of newTrees) {
-      if (findAndAdd(tree)) break;
-    }
-    setTrees(newTrees);
+    nextTrees.some(findAndAdd);
+    setTrees(nextTrees);
+    setKeyRegionClouds([]);
+    setFretboardOverlap(null);
+    setOverlapError(null);
     setContextMenu(null);
     setChordInput(null);
   };
 
-  const simulationRef = useRef<d3.Simulation<any, undefined> | null>(null);
+  const findNodeLabelById = (nodeId: string): string | null => {
+    const walk = (node: TreeNode): string | null => {
+      if (node.id === nodeId) {
+        return node.label;
+      }
+      if (!node.children) {
+        return null;
+      }
+      for (const child of node.children) {
+        const found = walk(child);
+        if (found) {
+          return found;
+        }
+      }
+      return null;
+    };
 
-  useEffect(() => {
-    if (!svgRef.current) return;
-
-    const width = 1600; // Increased width for more spread
-    const height = 800; // Increased height
-    const margin = { top: 80, right: 100, bottom: 100, left: 100 };
-    const innerWidth = width - margin.left - margin.right;
-    const innerHeight = height - margin.top - margin.bottom;
-
-    const svg = d3.select(svgRef.current);
-    
-    const zoom = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.1, 5])
-      .on('zoom', (event) => {
-        zoomGroup.attr('transform', event.transform);
-      });
-
-    // Zoom setup
-    let zoomGroup = svg.select<SVGGElement>('g.zoom-group');
-    if (zoomGroup.empty()) {
-      zoomGroup = svg.append('g').attr('class', 'zoom-group');
-      
-      // Initial zoom state
-      svg.call(zoom.transform, d3.zoomIdentity);
+    for (const tree of trees) {
+      const found = walk(tree);
+      if (found) {
+        return found;
+      }
     }
 
-    svg.call(zoom)
-      .on("dblclick.zoom", null) // Disable double-click zoom
-      .on('click', (event) => {
-        // Only clear selection if clicking directly on the SVG background
-        // and NOT if the click was suppressed by a zoom/pan action
-        if (event.target === svg.node() && !event.defaultPrevented) {
-          if (interactionMode === 'adder') {
-            addBar(event.clientX, event.clientY);
-          } else {
-            setSelectedNodeId(null);
-            setSelectedGhostId(null);
-            setContextMenu(null);
-            setChordInput(null);
+    return null;
+  };
+
+  const getLeafEntriesInDisplayOrder = (): LeafChordEntry[] => {
+    const innerWidth = VIEWBOX_WIDTH - MARGIN.left - MARGIN.right;
+    const layout = positionForest(trees, innerWidth);
+
+    const leafMetaById = new Map<string, { barIndex: number; leafIndex: number }>();
+    trees.forEach((tree, barIndex) => {
+      let leafIndex = 0;
+      const walk = (node: TreeNode) => {
+        if (!node.children || node.children.length === 0) {
+          if (node.id.startsWith('root-')) {
+            return;
           }
+          leafMetaById.set(node.id, { barIndex, leafIndex });
+          leafIndex += 1;
+          return;
         }
+        node.children.forEach(walk);
+      };
+      walk(tree);
+    });
+
+    return layout.leaves
+      .filter((leaf) => Boolean(leaf.parent))
+      .map((leaf) => {
+        const meta = leafMetaById.get(leaf.data.id);
+        return {
+          nodeId: leaf.data.id,
+          label: leaf.data.label,
+          x: leaf.layoutX,
+          barIndex: meta?.barIndex ?? 0,
+          leafIndex: meta?.leafIndex ?? 0,
+        };
+      })
+      .sort((a, b) => a.x - b.x);
+  };
+
+  const getLeafChordProgression = () => getLeafEntriesInDisplayOrder().map((item) => item.label);
+
+  const getCurrentLeafNodeIds = () => {
+    const ids = new Set<string>();
+    const walk = (node: TreeNode) => {
+      if (!node.children || node.children.length === 0) {
+        if (!node.id.startsWith('root-')) {
+          ids.add(node.id);
+        }
+        return;
+      }
+      node.children.forEach(walk);
+    };
+    trees.forEach(walk);
+    return ids;
+  };
+
+  const sendProgression = async () => {
+    const chords = getLeafChordProgression();
+    if (chords.length === 0) {
+      setSendStatus('No leaf chords to send.');
+      return;
+    }
+
+    setIsSendingProgression(true);
+    setSendStatus('Sending progression...');
+
+    try {
+      const response = await fetch(PROGRESSION_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chords }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const body = await response.json();
+      console.log('Sent progression:', chords);
+      console.log('Backend response:', body);
+      setSendStatus(`Sent ${chords.length} chord${chords.length === 1 ? '' : 's'}.`);
+    } catch (error) {
+      console.error('Failed to send progression:', error);
+      setSendStatus(`Send failed. Is backend running at ${PROGRESSION_API_URL}?`);
+    } finally {
+      setIsSendingProgression(false);
+    }
+  };
+
+  const fetchSuggestions = async () => {
+    const leafEntries = getLeafEntriesInDisplayOrder();
+    const chords = leafEntries.map((entry) => entry.label);
+
+    if (chords.length === 0) {
+      console.log('No leaf chords to suggest from.');
+      return;
+    }
+
+    setIsLoadingSuggestions(true);
+    console.log('Fetching suggestions for progression:', chords);
+
+    try {
+      const response = await fetch(SUGGESTIONS_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chords }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const body = (await response.json()) as SuggestionResponse;
+      console.log('Suggestion response:', body);
+
+      const substitutionsByLeafId: Record<string, string[]> = {};
+      leafEntries.forEach((entry) => {
+        substitutionsByLeafId[entry.nodeId] = [];
+      });
+      body.suggestions.forEach((entry, index) => {
+        const leaf = leafEntries[index];
+        if (!leaf) {
+          return;
+        }
+        const uniqueSymbols = Array.from(new Set(entry.items.map((item) => item.symbol).filter(Boolean)));
+        substitutionsByLeafId[leaf.nodeId] = uniqueSymbols;
+      });
+      setLeafSubstitutionsByNodeId(substitutionsByLeafId);
+
+      const keysByBar = new Map<number, string[]>();
+      leafEntries.forEach((entry, index) => {
+        const key = body.inferred_keys[index];
+        if (!key) {
+          return;
+        }
+        const existing = keysByBar.get(entry.barIndex) || [];
+        existing.push(key);
+        keysByBar.set(entry.barIndex, existing);
+      });
+
+      const barKeys = trees.map((_, barIndex) => {
+        const keyList = keysByBar.get(barIndex) || [];
+        if (keyList.length === 0) {
+          return null;
+        }
+        const counts = new Map<string, number>();
+        keyList.forEach((key) => counts.set(key, (counts.get(key) || 0) + 1));
+        return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      });
+
+      const regions: KeyRegionCloud[] = [];
+      let currentKey: string | null = null;
+      let currentStart = -1;
+      let regionIndex = 0;
+
+      barKeys.forEach((barKey, barIndex) => {
+        if (!barKey) {
+          if (currentKey !== null) {
+            regions.push({
+              regionIndex,
+              startBarIndex: currentStart,
+              endBarIndex: barIndex - 1,
+              key: currentKey,
+            });
+            regionIndex += 1;
+            currentKey = null;
+            currentStart = -1;
+          }
+          return;
+        }
+
+        if (currentKey === null) {
+          currentKey = barKey;
+          currentStart = barIndex;
+          return;
+        }
+
+        if (barKey !== currentKey) {
+          regions.push({
+            regionIndex,
+            startBarIndex: currentStart,
+            endBarIndex: barIndex - 1,
+            key: currentKey,
+          });
+          regionIndex += 1;
+          currentKey = barKey;
+          currentStart = barIndex;
+        }
+      });
+
+      if (currentKey !== null) {
+        regions.push({
+          regionIndex,
+          startBarIndex: currentStart,
+          endBarIndex: barKeys.length - 1,
+          key: currentKey,
+        });
+      }
+
+      setKeyRegionClouds(regions);
+    } catch (error) {
+      console.error('Failed to fetch suggestions:', error);
+    } finally {
+      setIsLoadingSuggestions(false);
+    }
+  };
+
+  const fetchFretboardOverlap = async (chordA: string, chordB: string) => {
+    setIsLoadingOverlap(true);
+    setOverlapError(null);
+
+    try {
+      const response = await fetch(OVERLAP_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chord_a: chordA, chord_b: chordB }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        const detail = typeof errorBody?.detail === 'string' ? errorBody.detail : `HTTP ${response.status}`;
+        throw new Error(detail);
+      }
+
+      const body = (await response.json()) as FretboardOverlapData;
+      setFretboardOverlap(body);
+      console.log('Fretboard overlap:', body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown overlap error.';
+      console.error('Failed to fetch fretboard overlap:', error);
+      setOverlapError(message);
+      setFretboardOverlap(null);
+    } finally {
+      setIsLoadingOverlap(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!svgRef.current) {
+      return;
+    }
+
+    const width = VIEWBOX_WIDTH;
+    const innerWidth = width - MARGIN.left - MARGIN.right;
+
+    const svg = d3.select(svgRef.current);
+    const zoomGroup =
+      svg.select<SVGGElement>('g.zoom-group').empty()
+        ? svg.append('g').attr('class', 'zoom-group')
+        : svg.select<SVGGElement>('g.zoom-group');
+
+    const mainGroup =
+      zoomGroup.select<SVGGElement>('g.main-group').empty()
+        ? zoomGroup.append('g').attr('class', 'main-group').attr('transform', translate(MARGIN.left, MARGIN.top))
+        : zoomGroup.select<SVGGElement>('g.main-group');
+
+    const cloudLayer =
+      mainGroup.select<SVGGElement>('g.key-region-cloud-layer').empty()
+        ? mainGroup.insert('g', ':first-child').attr('class', 'key-region-cloud-layer pointer-events-none')
+        : mainGroup.select<SVGGElement>('g.key-region-cloud-layer');
+
+    const zoom = d3
+      .zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.35, 2.5])
+      .on('zoom', (event) => {
+        zoomGroup.attr('transform', event.transform.toString());
+      });
+
+    svg
+      .call(zoom)
+      .on('dblclick.zoom', null)
+      .on('click', (event) => {
+        if (event.target !== svg.node() || event.defaultPrevented) {
+          return;
+        }
+
+        if (interactionMode === 'adder') {
+          addBar(event.clientX, event.clientY);
+          return;
+        }
+
+        setSelectedNodeId(null);
+        setSelectedGhostId(null);
+        setContextMenu(null);
+        setChordInput(null);
       })
       .on('contextmenu', (event) => {
+        if (event.target !== svg.node()) {
+          return;
+        }
+
         event.preventDefault();
-        // Get coordinates relative to the SVG, but we'll use screen coordinates for the React menu
-        // to avoid zoom/pan transformation issues on the menu itself
         setContextMenu({
           x: event.clientX,
           y: event.clientY,
-          type: 'background'
+          type: 'background',
         });
       });
 
-    let g = zoomGroup.select<SVGGElement>('g.main-group');
-    if (g.empty()) {
-      g = zoomGroup.append('g').attr('class', 'main-group').attr('transform', `translate(${margin.left},${margin.top})`);
-    }
+    const displayTrees = buildDisplayTrees(trees, selectedNodeId, currentPreviewLabels);
+    const { nodes, links, leaves, roots, terminalY } = positionForest(displayTrees, innerWidth);
+    const previousPositions = nodePositionRef.current;
+    const transition = d3.transition().duration(TRANSITION_MS).ease(d3.easeCubicOut);
 
-    // Clone data to inject previews without mutating state
-    const displayTrees = JSON.parse(JSON.stringify(trees));
-    if (selectedNodeId && currentPreviewLabels.length > 0) {
-      const injectGhosts = (node: any) => {
-        if (node.id === selectedNodeId) {
-          const ghosts = currentPreviewLabels.map((l: string, i: number) => ({
-            id: `ghost-${selectedNodeId}-${i}`,
-            label: l,
-            isPreview: true,
-            optionLabels: currentPreviewLabels
-          }));
-          node.children = node.children ? [...node.children, ...ghosts] : ghosts;
-          return true;
-        }
-        if (node.children) {
-          for (const child of node.children) {
-            if (injectGhosts(child)) return true;
-          }
-        }
-        return false;
-      };
-      displayTrees.forEach((tree: any) => injectGhosts(tree));
-    }
+    const getStartingPoint = (node: PositionedNode) => {
+      const existing = previousPositions.get(node.data.id);
+      if (existing) {
+        return existing;
+      }
 
-    // Build separate hierarchies per bar to avoid a visual super-root
-    const roots = displayTrees.map((tree: any) => d3.hierarchy(tree));
-
-    // We don't actually use treeLayout for positioning anymore, we use force simulation
-    // but we still need the hierarchy to get links and descendants
-    const newNodes = roots.flatMap(r => r.descendants());
-    const newLinks = roots.flatMap(r => r.links());
-    const visibleNodes = newNodes;
-    const visibleLinks = newLinks;
-
-    // If simulation doesn't exist, create it
-    if (!simulationRef.current) {
-      simulationRef.current = d3.forceSimulation<any>()
-        .force('link', d3.forceLink<any, any>().id(d => d.data.id).distance(40).strength(0.5))
-        .force('charge', d3.forceManyBody().strength(-300))
-        .force('x', d3.forceX<any>(innerWidth / 2).strength(0.01)) // Weak pull to center
-        .force('collision', d3.forceCollide().radius(35))
-        .velocityDecay(0.5);
-    }
-
-    const simulation = simulationRef.current;
-    const oldNodes = simulation.nodes();
-    const nodeMap = new Map(oldNodes.map(d => [d.data.id, d]));
-
-    // Sync nodes: preserve existing positions, initialize new ones at parent
-    newNodes.forEach((d: any) => {
-      const old = nodeMap.get(d.data.id) as any;
-      if (old) {
-        d.x = old.x;
-        d.y = old.y;
-        d.vx = old.vx;
-        d.vy = old.vy;
-      } else {
-        // New node: spawn slightly below parent with deterministic X offset to prevent crossing
-        if (d.parent) {
-          const parentInSim = nodeMap.get(d.parent.data.id) || d.parent;
-          const siblings = d.parent.children || [];
-          const index = siblings.indexOf(d);
-          const spread = 15; // Initial spread to avoid overlap
-          const xOffset = (index - (siblings.length - 1) / 2) * spread;
-          
-          d.x = (parentInSim.x || innerWidth / 2) + xOffset;
-          d.y = (parentInSim.y || 0) + 10;
-          
-          // Initial "catapult" velocity in the correct direction
-          d.vx = xOffset * 1.5;
-          d.vy = 15;
-        } else {
-          // New root node: spawn at current mouse position if available, or center
-          d.x = d.data.initialX || innerWidth / 2;
-          d.y = d.data.initialY || 0;
+      if (node.parent) {
+        const parentPoint = previousPositions.get(node.parent.data.id);
+        if (parentPoint) {
+          return parentPoint;
         }
       }
 
-      // Anchor the root nodes to prevent drifting if they were manually placed
-      // but the user wants them to be at the same layer (y=0)
-      if (!d.parent) {
-        d.fy = 0;
-        // We don't fix fx so they can balance horizontally
+      return { x: node.layoutX, y: node.layoutY };
+    };
+
+    const cloudSelection = cloudLayer
+      .selectAll<SVGGElement, KeyRegionCloud>('g.key-region-cloud')
+      .data(keyRegionClouds, (region: any) => `region-${region.regionIndex}-${region.startBarIndex}-${region.endBarIndex}`);
+
+    cloudSelection.exit().transition(transition).attr('opacity', 0).remove();
+
+    const cloudEnter = cloudSelection
+      .enter()
+      .append('g')
+      .attr('class', 'key-region-cloud pointer-events-none')
+      .attr('opacity', 0);
+
+    cloudEnter.append('rect');
+    cloudEnter.append('text').attr('class', 'scientific-text').attr('font-size', 11).attr('font-style', 'italic');
+
+    const cloudUpdate = cloudEnter.merge(cloudSelection as any);
+
+    cloudUpdate.each(function (region: KeyRegionCloud) {
+      const regionRoots = roots.slice(region.startBarIndex, region.endBarIndex + 1);
+      if (regionRoots.length === 0) {
+        return;
       }
+
+      const minX = d3.min(regionRoots, (root) => root.subtreeMinX) ?? 0;
+      const maxX = d3.max(regionRoots, (root) => root.subtreeMaxX) ?? 0;
+      const yTop = KEY_REGION_VISUALS.cloudTopOffset;
+      const yBottom = terminalY + KEY_REGION_VISUALS.cloudBottomExtra;
+      const x = minX - KEY_REGION_VISUALS.cloudHorizontalPadding;
+      const widthRect = Math.max(24, maxX - minX + KEY_REGION_VISUALS.cloudHorizontalPadding * 2);
+      const heightRect = Math.max(24, yBottom - yTop);
+      const color = KEY_REGION_COLORS[region.regionIndex % KEY_REGION_COLORS.length];
+
+      const group = d3.select(this);
+      group
+        .select('rect')
+        .transition(transition)
+        .attr('x', x)
+        .attr('y', yTop)
+        .attr('width', widthRect)
+        .attr('height', heightRect)
+        .attr('rx', KEY_REGION_VISUALS.cloudCornerRadius)
+        .attr('ry', KEY_REGION_VISUALS.cloudCornerRadius)
+        .attr('fill', color)
+        .attr('fill-opacity', KEY_REGION_VISUALS.cloudFillOpacity)
+        .attr('stroke', color)
+        .attr('stroke-opacity', KEY_REGION_VISUALS.cloudStrokeOpacity)
+        .attr('stroke-width', KEY_REGION_VISUALS.cloudStrokeWidth);
+
+      group
+        .select('text')
+        .transition(transition)
+        .attr('x', x + KEY_REGION_VISUALS.cloudLabelXInset)
+        .attr('y', KEY_REGION_VISUALS.cloudLabelY)
+        .attr('fill', '#4b5563')
+        .text(region.key);
     });
 
-    simulation.nodes(newNodes);
-    (simulation.force('link') as d3.ForceLink<any, any>).links(newLinks);
-    
-    // Add a Y force that pulls to the layer level (Constant gap)
-    const LAYER_GAP = 120;
-    const maxDepth = d3.max(newNodes, d => d.depth) || 0;
-    const terminalY = (maxDepth + 1) * LAYER_GAP;
+    cloudUpdate.transition(transition).attr('opacity', 1);
 
-    simulation.force('y', d3.forceY<any>((d: any) => {
-      if (d.data.id === selectedGhostId) return terminalY;
-      return d.depth * LAYER_GAP;
-    }).strength(0.12));
-    
-    // Add a centering force to pull everything toward the middle
-    simulation.force('x', d3.forceX<any>(innerWidth / 2).strength(0.01));
-    
-    simulation.alpha(1).restart();
+    const bbox = mainGroup
+      .selectAll<SVGRectElement, PositionedNode>('rect.tree-bounds')
+      .data(showBoundingBoxes ? nodes : [], (node: any) => node.data.id);
 
-    // Render Links
-    const link = g.selectAll<SVGPathElement, any>('.link')
-      .data(visibleLinks, (d: any) => `${d.source.data.id}-${d.target.data.id}`);
+    bbox.exit().remove();
 
-    link.exit().remove();
+    bbox
+      .enter()
+      .append('rect')
+      .attr('class', 'tree-bounds pointer-events-none')
+      .attr('rx', 18)
+      .attr('fill', 'rgba(194, 153, 97, 0.05)')
+      .attr('stroke', 'rgba(169, 124, 61, 0.28)')
+      .attr('stroke-dasharray', '5 5')
+      .merge(bbox as any)
+      .transition(transition)
+      .attr('x', (node) => node.subtreeMinX - 18)
+      .attr('y', (node) => node.layoutY - 26)
+      .attr('width', (node) => Math.max(36, node.subtreeMaxX - node.subtreeMinX + 36))
+      .attr('height', (node) => Math.max(48, node.height * LAYER_GAP + 52));
 
-    const linkEnter = link.enter()
+    const linkSelection = mainGroup
+      .selectAll<SVGPathElement, PositionedLink>('path.link')
+      .data(links, (link: any) => `${link.source.data.id}-${link.target.data.id}`);
+
+    linkSelection.exit().transition(transition).attr('opacity', 0).remove();
+
+    const linkEnter = linkSelection
+      .enter()
       .append('path')
       .attr('class', 'link pointer-events-none')
       .attr('fill', 'none')
-      .attr('stroke', (d: any) => d.target.data.isPreview ? '#334155' : '#1a1a1a')
-      .attr('stroke-width', 0.6)
-      .attr('stroke-dasharray', (d: any) => d.target.data.isPreview ? '2,2' : 'none')
-      .attr('opacity', 0);
+      .attr('stroke-linecap', 'round')
+      .attr('opacity', 0)
+      .attr('d', (link) => {
+        const sourcePoint = getStartingPoint(link.source);
+        return `M${sourcePoint.x},${sourcePoint.y} C${sourcePoint.x},${sourcePoint.y} ${sourcePoint.x},${sourcePoint.y} ${sourcePoint.x},${sourcePoint.y}`;
+      });
 
-    const linkUpdate = linkEnter.merge(link);
-    linkUpdate
-      .attr('stroke', (d: any) => d.target.data.isPreview ? '#334155' : '#1a1a1a')
-      .attr('stroke-dasharray', (d: any) => d.target.data.isPreview ? '2,2' : 'none')
-      .transition().duration(800)
-      .attr('opacity', 1);
+    linkEnter
+      .merge(linkSelection as any)
+      .attr('stroke', (link: PositionedLink) => (link.target.data.isPreview ? '#b37a3c' : '#3f3328'))
+      .attr('stroke-width', (link: PositionedLink) => (link.target.data.isPreview ? 1.2 : 1.35))
+      .attr('stroke-dasharray', (link: PositionedLink) => (link.target.data.isPreview ? '4 6' : 'none'))
+      .transition(transition)
+      .attr('opacity', 1)
+      .attr('d', (link: PositionedLink) => linkPath(link.source, link.target));
 
-    // Render Terminal Links
-    const leaves = roots.flatMap(r => r.leaves()).filter(d => !d.data.isPreview);
-    const terminalLink = g.selectAll<SVGLineElement, any>('.terminal-link')
-      .data(leaves, (d: any) => d.data.id);
+    const terminalLinkSelection = mainGroup
+      .selectAll<SVGLineElement, PositionedNode>('line.terminal-link')
+      .data(leaves, (leaf: any) => leaf.data.id);
 
-    terminalLink.exit().remove();
+    terminalLinkSelection.exit().transition(transition).attr('opacity', 0).remove();
 
-    const terminalLinkEnter = terminalLink.enter()
+    const terminalLinkEnter = terminalLinkSelection
+      .enter()
       .append('line')
       .attr('class', 'terminal-link pointer-events-none')
-      .attr('stroke', '#1a1a1a')
-      .attr('stroke-width', 0.6)
-      .attr('stroke-dasharray', '2,2')
-      .attr('opacity', 0);
+      .attr('stroke', '#80654a')
+      .attr('stroke-width', 1)
+      .attr('stroke-dasharray', '3 5')
+      .attr('opacity', 0)
+      .attr('x1', (leaf) => getStartingPoint(leaf).x)
+      .attr('x2', (leaf) => getStartingPoint(leaf).x)
+      .attr('y1', (leaf) => getStartingPoint(leaf).y)
+      .attr('y2', (leaf) => getStartingPoint(leaf).y);
 
-    const terminalLinkUpdate = terminalLinkEnter.merge(terminalLink);
-    terminalLinkUpdate.transition().duration(800).attr('opacity', 1);
+    terminalLinkEnter
+      .merge(terminalLinkSelection as any)
+      .transition(transition)
+      .attr('opacity', 1)
+      .attr('x1', (leaf: PositionedNode) => leaf.layoutX)
+      .attr('x2', (leaf: PositionedNode) => leaf.layoutX)
+      .attr('y1', (leaf: PositionedNode) => leaf.layoutY)
+      .attr('y2', terminalY);
 
-    // Render Nodes
-    const node = g.selectAll<SVGGElement, any>('.node')
-      .data(visibleNodes, (d: any) => d.data.id);
+    const nodeSelection = mainGroup
+      .selectAll<SVGGElement, PositionedNode>('g.node')
+      .data(nodes, (node: any) => node.data.id);
 
-    node.exit().remove();
+    nodeSelection
+      .exit()
+      .transition(transition)
+      .attr('opacity', 0)
+      .attr('transform', (node: PositionedNode) => {
+        const target = (node.parent as PositionedNode | null) ?? node;
+        return translate(target.layoutX, target.layoutY);
+      })
+      .remove();
 
-    const nodeEnter = node.enter()
+    const nodeEnter = nodeSelection
+      .enter()
       .append('g')
-      .attr('class', 'node cursor-pointer')
-      .call(d3.drag<any, any>()
-        .on('start', dragstarted)
-        .on('drag', dragged)
-        .on('end', dragended) as any);
+      .attr('class', 'node')
+      .attr('opacity', 0)
+      .attr('transform', (node) => {
+        const start = getStartingPoint(node);
+        return translate(start.x, start.y);
+      });
 
-    // Add a transparent hit area for easier clicking
-    nodeEnter.append('circle')
+    nodeEnter.append('circle').attr('class', 'node-hit').attr('r', 22).attr('fill', 'transparent');
+
+    nodeEnter
+      .append('circle')
+      .attr('class', 'node-halo')
       .attr('r', 15)
-      .attr('fill', 'transparent')
-      .attr('class', 'hit-area');
-
-    nodeEnter.append('circle')
-      .attr('r', 5);
-
-    nodeEnter.append('text')
-      .attr('dy', '-1em')
-      .attr('text-anchor', 'middle')
-      .attr('class', 'scientific-text text-sm italic font-serif select-none pointer-events-none')
+      .attr('fill', 'rgba(194, 153, 97, 0.18)')
       .attr('opacity', 0);
 
-    const nodeUpdate = nodeEnter.merge(node);
+    nodeEnter.append('circle').attr('class', 'node-dot');
 
-    nodeUpdate.on('click', (event, d) => {
-      event.stopPropagation();
-      setContextMenu(null);
+    nodeEnter
+      .append('text')
+      .attr('class', 'node-label scientific-text')
+      .attr('text-anchor', 'middle')
+      .attr('pointer-events', 'none');
 
-      if (interactionMode === 'pointer' && !d.parent) {
-        return;
-      }
+    const nodeUpdate = nodeEnter.merge(nodeSelection as any);
 
-      if (interactionMode === 'adder') {
-        if (!d.data.isPreview) {
-          setChordInput({
-            nodeId: d.data.id,
-            x: event.clientX,
-            y: event.clientY
-          });
+    nodeUpdate
+      .style('cursor', (node: PositionedNode) => {
+        if (node.data.isPreview) {
+          return 'pointer';
         }
-        return;
-      }
 
-      if (d.data.isPreview) {
-        if (selectedGhostId === d.data.id) {
-          // Confirm ONLY the staged ghost node
-          handleExpansion(selectedNodeId!, [d.data.label]);
-        } else {
-          setSelectedGhostId(d.data.id);
+        if (interactionMode === 'adder') {
+          return 'cell';
         }
-      } else {
-        setSelectedNodeId(d.data.id);
+
+        return node.parent ? 'pointer' : 'default';
+      })
+      .on('click', (event: any, node: PositionedNode) => {
+        event.stopPropagation();
+        setContextMenu(null);
+
+        if (interactionMode === 'adder') {
+          if (!node.data.isPreview) {
+            setChordInput({
+              nodeId: node.data.id,
+              x: event.clientX,
+              y: event.clientY,
+            });
+          }
+          return;
+        }
+
+        if (!node.parent) {
+          return;
+        }
+
+        if (node.data.isPreview) {
+          if (selectedGhostId === node.data.id && selectedNodeId) {
+            handleExpansion(selectedNodeId, [node.data.label]);
+          } else {
+            setSelectedGhostId(node.data.id);
+            const selectedLabel = selectedNodeId ? findNodeLabelById(selectedNodeId) : null;
+            const hasSuggestionSubstitutions = selectedNodeId
+              ? (leafSubstitutionsByNodeId[selectedNodeId]?.length ?? 0) > 0
+              : false;
+            if (selectedLabel && hasSuggestionSubstitutions) {
+              void fetchFretboardOverlap(selectedLabel, node.data.label);
+            } else {
+              setFretboardOverlap(null);
+              setOverlapError(null);
+            }
+          }
+          return;
+        }
+
+        setSelectedNodeId(node.data.id);
         setSelectedGhostId(null);
+        setOverlapError(null);
         setPreviewOptionIndex(0);
-      }
-    })
-    .on('contextmenu', (event, d) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!d.parent) {
+      })
+      .on('contextmenu', (event: any, node: PositionedNode) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        if (node.parent) {
+          return;
+        }
+
         setContextMenu({
           x: event.clientX,
           y: event.clientY,
           type: 'root',
-          nodeId: d.data.id
+          nodeId: node.data.id,
         });
-      }
-    });
-    
-    // Bounding Box Visualization
-    const bbox = nodeUpdate.selectAll<SVGRectElement, any>('.bbox')
-      .data(d => showBoundingBoxes ? [d] : []);
-    
-    bbox.exit().remove();
-    bbox.enter().append('rect')
-      .attr('class', 'bbox')
-      .attr('fill', 'rgba(59, 130, 246, 0.02)')
-      .attr('stroke', 'rgba(59, 130, 246, 0.2)')
-      .attr('stroke-width', 1)
-      .attr('stroke-dasharray', '4,4')
-      .merge(bbox as any);
-
-    const sBbox = nodeUpdate.selectAll<SVGRectElement, any>('.s-bbox')
-      .data((d: any) => (showBoundingBoxes && d.sMin !== d.minX) ? [d] : []);
-    
-    sBbox.exit().remove();
-    sBbox.enter().append('rect')
-      .attr('class', 's-bbox')
-      .attr('fill', 'none')
-      .attr('stroke', 'rgba(16, 185, 129, 0.3)') // Emerald for structural
-      .attr('stroke-width', 1)
-      .merge(sBbox as any);
-
-    nodeUpdate.select('circle')
-      .attr('fill', (d: any) => {
-        if (d.data.id === selectedGhostId) return '#334155';
-        return d.data.isPreview ? '#f1f5f9' : '#fff';
-      })
-      .attr('stroke', (d: any) => {
-        if (d.data.id === selectedGhostId) return '#0f172a';
-        return d.data.isPreview ? '#334155' : '#1a1a1a';
-      })
-      .attr('stroke-width', (d: any) => d.data.id === selectedGhostId ? 2 : 1.5)
-      .attr('stroke-dasharray', (d: any) => (d.data.isPreview && d.data.id !== selectedGhostId) ? '2,2' : 'none');
-
-    nodeUpdate.select('text')
-      .attr('fill', (d: any) => {
-        if (d.data.id === selectedGhostId) return '#0f172a';
-        return d.data.isPreview ? '#334155' : '#1a1a1a';
-      })
-      .text(d => d.data.label)
-      .transition().duration(800)
-      .attr('opacity', 1);
-
-    // Terminal labels
-    const terminalLabel = g.selectAll<SVGTextElement, any>('.terminal-label')
-      .data(leaves, (d: any) => d.data.id);
-
-    terminalLabel.exit().remove();
-
-    const terminalLabelEnter = terminalLabel.enter()
-      .append('text')
-      .attr('class', 'terminal-label scientific-text text-sm font-serif select-none pointer-events-none')
-      .attr('text-anchor', 'middle')
-      .text(d => d.data.label)
-      .attr('opacity', 0);
-
-    const terminalLabelUpdate = terminalLabelEnter.merge(terminalLabel);
-    terminalLabelUpdate.transition().duration(800).attr('opacity', 1);
-
-    simulation.on('tick', () => {
-      // 1. Calculate subtree extents
-      const updateExtents = (node: any) => {
-        let x = node.x || 0;
-        
-        // Structural extents (real nodes + staged ghosts)
-        let sMin = x;
-        let sMax = x;
-
-        if (node.children && node.children.length > 0) {
-          node.children.forEach((child: any) => {
-            updateExtents(child);
-            
-            const isSolid = !child.data.isPreview || child.data.id === selectedGhostId;
-            if (isSolid) {
-              sMin = Math.min(sMin, child.sMin);
-              sMax = Math.max(sMax, child.sMax);
-            }
-          });
-        }
-        
-        node.sMin = sMin;
-        node.sMax = sMax;
-        
-        // For physics, we use sMin/sMax for solid nodes. 
-        // BUT we want siblings to stay away from the ghost cluster.
-        const ghostRadius = 90; // Even more freedom
-        const hasGhosts = node.children?.some((c: any) => c.data.isPreview && c.data.id !== selectedGhostId);
-        
-        node.minX = (!node.data.isPreview || node.data.id === selectedGhostId) 
-          ? Math.min(sMin, hasGhosts ? x - ghostRadius : sMin) 
-          : x - 5;
-        node.maxX = (!node.data.isPreview || node.data.id === selectedGhostId) 
-          ? Math.max(sMax, hasGhosts ? x + ghostRadius : sMax) 
-          : x + 5;
-      };
-      roots.forEach(r => updateExtents(r));
-
-      // 2. Physics: Sibling Subtree Separation & Parent Centering
-      roots.forEach((r: any) => r.descendants().forEach((d: any) => {
-        // A. Separate siblings
-        if (d.children && d.children.length > 1) {
-          for (let i = 0; i < d.children.length - 1; i++) {
-            const left = d.children[i];
-            const right = d.children[i + 1];
-            
-            const leftIsSolid = !left.data.isPreview || left.data.id === selectedGhostId;
-            const rightIsSolid = !right.data.isPreview || right.data.id === selectedGhostId;
-            
-            if (leftIsSolid && rightIsSolid) {
-              // Solid vs Solid: Full subtree separation
-              const minGap = 120; // More space between branches
-              if (left.maxX + minGap > right.minX) {
-                const overlap = (left.maxX + minGap - right.minX);
-                const strength = 0.3; // Stronger push
-                const leftDesc = left.descendants();
-                const rightDesc = right.descendants();
-                leftDesc.forEach((n: any) => n.vx -= overlap * strength);
-                rightDesc.forEach((n: any) => n.vx += overlap * strength);
-              }
-            } else if (!leftIsSolid && !rightIsSolid) {
-              // Ghost vs Ghost: Tight individual separation
-              const minGap = 35;
-              if (left.x + minGap > right.x) {
-                const overlap = (left.x + minGap - right.x);
-                left.vx -= overlap * 0.1;
-                right.vx += overlap * 0.1;
-              }
-            }
-            // Ghost vs Solid: NO INTERACTION (Ghosts are weightless)
-          }
-        }
-
-        // B. Balancing: Center subtrees under parent
-        if (d.children && d.children.length > 0) {
-          const solidChildren = d.children.filter((c: any) => !c.data.isPreview || c.data.id === selectedGhostId);
-          const hasSolid = solidChildren.length > 0;
-          
-          if (hasSolid) {
-            const cMin = Math.min(...solidChildren.map((c: any) => c.sMin));
-            const cMax = Math.max(...solidChildren.map((c: any) => c.sMax));
-            const cMid = (cMin + cMax) / 2;
-            
-            // Pull parent toward the midpoint of its solid children's subtrees
-            if (d.parent) {
-              d.vx += (cMid - d.x) * 0.15;
-            }
-            
-            // Pull solid children to be centered under parent
-            const offset = d.x - cMid;
-            solidChildren.forEach((c: any) => {
-              const desc = c.descendants();
-              // Stronger pull for verticality
-              desc.forEach((n: any) => n.vx += offset * 0.15);
-            });
-          }
-          
-          // Non-staged ghosts: Radial distribution around parent
-          const ghosts = d.children.filter((c: any) => c.data.isPreview && c.data.id !== selectedGhostId);
-          if (ghosts.length > 0) {
-            const radius = 60;
-            const angleRange = Math.PI * 0.7; // ~126 degree arc
-            ghosts.forEach((c: any, i: number) => {
-              const angle = (i - (ghosts.length - 1) / 2) * (angleRange / Math.max(1, ghosts.length - 1));
-              const tx = d.x + radius * Math.sin(angle);
-              const ty = d.y + radius * Math.cos(angle);
-              
-              c.vx += (tx - c.x) * 0.25;
-              // Store targetY for the tick function
-              c.targetGhostY = ty;
-            });
-          }
-        }
-      }));
-
-      // 4. Render Updates & Strict Y enforcement
-      const LAYER_GAP = 120;
-      const maxDepth = d3.max(newNodes, d => d.depth) || 0;
-      const terminalY = (maxDepth + 1) * LAYER_GAP;
-      
-      linkUpdate.attr('d', (d: any) => `M${d.source.x},${d.source.y} L${d.target.x},${d.target.y}`);
-      
-      nodeUpdate.attr('transform', (d: any) => {
-        const targetY = (d.data.id === selectedGhostId) ? terminalY : d.depth * LAYER_GAP;
-        
-        // Update bounding box if visible
-        if (showBoundingBoxes) {
-          const fullWidth = (d.maxX || d.x) - (d.minX || d.x);
-          const fullXOffset = (d.minX || d.x) - d.x;
-          
-          const sWidth = (d.sMax || d.x) - (d.sMin || d.x);
-          const sXOffset = (d.sMin || d.x) - d.x;
-
-          const currentNode = nodeUpdate.filter((node: any) => node.data.id === d.data.id);
-          
-          currentNode.select('.bbox')
-            .attr('x', fullXOffset - 10)
-            .attr('y', -20)
-            .attr('width', Math.max(20, fullWidth + 20))
-            .attr('height', 40);
-
-          currentNode.select('.s-bbox')
-            .attr('x', sXOffset - 5)
-            .attr('y', -15)
-            .attr('width', Math.max(10, sWidth + 10))
-            .attr('height', 30);
-        }
-
-        // Enforce strict Y level unless being dragged or is a non-selected ghost node
-        if (d.fx === null || d.fx === undefined) {
-          if (d.data.isPreview && d.data.id !== selectedGhostId) {
-            // Ghost nodes follow their radial target Y
-            const idealY = d.targetGhostY || (d.parent ? d.parent.y + 45 : 0);
-            d.y += (idealY - d.y) * 0.15; 
-          } else {
-            // Real nodes or "staged" ghost nodes use strict Y level
-            // If it's the selected ghost, use terminalY
-            const finalY = (d.data.id === selectedGhostId) ? terminalY : targetY;
-            d.y = finalY;
-            d.vy = 0;
-          }
-        }
-        
-        return `translate(${d.x},${d.y})`;
       });
 
-      terminalLinkUpdate
-        .attr('x1', (d: any) => d.x)
-        .attr('y1', (d: any) => d.y)
-        .attr('x2', (d: any) => d.x)
-        .attr('y2', terminalY);
+    nodeUpdate.transition(transition).attr('opacity', 1).attr('transform', (node: PositionedNode) => translate(node.layoutX, node.layoutY));
 
-      terminalLabelUpdate
-        .attr('x', (d: any) => d.x)
-        .attr('y', terminalY + 25);
-    });
+    nodeUpdate
+      .select<SVGCircleElement>('circle.node-halo')
+      .transition(transition)
+      .attr('opacity', (node: PositionedNode) => (node.data.id === selectedNodeId || node.data.id === selectedGhostId ? 1 : 0));
 
-    function dragstarted(event: any, d: any) {
-      if (!event.active) simulation.alphaTarget(0.3).restart();
-      d.fx = d.x;
-      d.fy = d.y;
-    }
+    nodeUpdate
+      .select<SVGCircleElement>('circle.node-dot')
+      .attr('stroke-linejoin', 'round')
+      .attr('stroke-linecap', 'round')
+      .transition(transition)
+      .attr('r', (node: PositionedNode) => (!node.parent ? 8.5 : node.data.isPreview ? 6.5 : NODE_RADIUS))
+      .attr('fill', (node: PositionedNode) => {
+        if (!node.parent) return '#8c5a2b';
+        if (node.data.id === selectedGhostId) return '#b87932';
+        if (node.data.id === selectedNodeId) return '#f1dec1';
+        return node.data.isPreview ? '#fff4e4' : '#fffdfa';
+      })
+      .attr('stroke', (node: PositionedNode) => {
+        if (!node.parent) return '#5c3b1f';
+        if (node.data.id === selectedGhostId) return '#7f4f20';
+        if (node.data.id === selectedNodeId) return '#9a622c';
+        return node.data.isPreview ? '#b37a3c' : '#3f3328';
+      })
+      .attr('stroke-width', (node: PositionedNode) => (node.data.id === selectedNodeId || node.data.id === selectedGhostId ? 2.2 : 1.4))
+      .attr('stroke-dasharray', (node: PositionedNode) => (node.data.isPreview ? '4 4' : 'none'));
 
-    function dragged(event: any, d: any) {
-      d.fx = event.x;
-      d.fy = event.y;
-    }
+    nodeUpdate
+      .select<SVGTextElement>('text.node-label')
+      .text((node: PositionedNode) => (shouldShowInlineLabel(node) ? node.data.label : ''))
+      .transition(transition)
+      .attr('opacity', (node: PositionedNode) => (shouldShowInlineLabel(node) ? 1 : 0))
+      .attr('dy', (node: PositionedNode) => (!node.parent ? -32 : -18))
+      .attr('fill', (node: PositionedNode) => (!node.parent ? '#6f655c' : node.data.isPreview ? '#9a622c' : '#241d18'))
+      .attr('font-size', (node: PositionedNode) => (!node.parent ? 12 : 18))
+      .attr('font-style', (node: PositionedNode) => (!node.parent ? 'normal' : 'italic'))
+      .attr('font-weight', (node: PositionedNode) => (!node.parent ? 600 : 500))
+      .attr('letter-spacing', (node: PositionedNode) => (!node.parent ? '0.18em' : '0.02em'));
 
-    function dragended(event: any, d: any) {
-      if (!event.active) simulation.alphaTarget(0);
-      d.fx = null;
-      d.fy = null;
-    }
+    const selectedNodes = nodeUpdate.filter(
+      (node: PositionedNode) => node.data.id === selectedNodeId || node.data.id === selectedGhostId,
+    );
+    selectedNodes.raise();
 
-    return () => {
-      simulation.on('tick', null);
-    };
-  }, [trees, depth, selectedNodeId, selectedGhostId, previewOptionIndex, currentPreviewLabels, showBoundingBoxes, interactionMode]);
+    const terminalLabelSelection = mainGroup
+      .selectAll<SVGTextElement, PositionedNode>('text.terminal-label')
+      .data(leaves, (leaf: any) => leaf.data.id);
+
+    terminalLabelSelection.exit().transition(transition).attr('opacity', 0).remove();
+
+    const terminalLabelEnter = terminalLabelSelection
+      .enter()
+      .append('text')
+      .attr('class', 'terminal-label scientific-text')
+      .attr('text-anchor', 'middle')
+      .attr('fill', '#241d18')
+      .attr('font-size', 17)
+      .attr('font-style', 'italic')
+      .attr('opacity', 0)
+      .attr('x', (leaf) => getStartingPoint(leaf).x)
+      .attr('y', terminalY + 28);
+
+    terminalLabelEnter
+      .merge(terminalLabelSelection as any)
+      .text((leaf: PositionedNode) => leaf.data.label)
+      .transition(transition)
+      .attr('opacity', 1)
+      .attr('x', (leaf: PositionedNode) => leaf.layoutX)
+      .attr('y', terminalY + 30);
+
+    nodePositionRef.current = new Map(
+      nodes.map((node) => [
+        node.data.id,
+        {
+          x: node.layoutX,
+          y: node.layoutY,
+        },
+      ]),
+    );
+  }, [currentPreviewLabels, interactionMode, keyRegionClouds, selectedGhostId, selectedNodeId, showBoundingBoxes, trees]);
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!selectedNodeId) return;
-
-      if (e.key === 'Tab' || e.key === 'ArrowRight' || e.key === ' ') {
-        e.preventDefault();
-        setPreviewOptionIndex(prev => prev + 1);
-        setSelectedGhostId(null);
-      } else if (e.key === 'Escape') {
-        setSelectedNodeId(null);
-        setSelectedGhostId(null);
-        setContextMenu(null);
-      } else if (e.key === 'Enter') {
-        if (selectedGhostId) {
-          const ghostNode = currentPreviewLabels.find((_, i) => `ghost-${selectedNodeId}-${i}` === selectedGhostId);
-          if (ghostNode) {
-            handleExpansion(selectedNodeId, [ghostNode]);
-          }
-        }
-      }
-    };
-
-    const handleMouseDown = (e: MouseEvent) => {
-      if (contextMenu && !document.querySelector('.context-menu')?.contains(e.target as Node)) {
+    const handleMouseDown = (event: MouseEvent) => {
+      if (contextMenu && !document.querySelector('.context-menu')?.contains(event.target as Node)) {
         setContextMenu(null);
       }
-      if (chordInput && !document.querySelector('.chord-input-container')?.contains(e.target as Node)) {
+
+      if (chordInput && !document.querySelector('.chord-input-container')?.contains(event.target as Node)) {
         setChordInput(null);
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('mousedown', handleMouseDown);
+
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('mousedown', handleMouseDown);
     };
-  }, [selectedNodeId, previewOptionIndex, trees, currentPreviewLabels, contextMenu, chordInput]);
+  }, [chordInput, contextMenu]);
+
+  useEffect(() => {
+    const currentLeafNodeIds = getCurrentLeafNodeIds();
+    setLeafSubstitutionsByNodeId((prev: Record<string, string[]>) => {
+      const next: Record<string, string[]> = {};
+      Object.entries(prev).forEach(([nodeId, substitutions]) => {
+        if (currentLeafNodeIds.has(nodeId)) {
+          next[nodeId] = substitutions;
+        }
+      });
+      return next;
+    });
+  }, [trees]);
 
   const getOptions = (label: string) => {
     const baseLabel = label.split('_')[0];
     return EXPANSION_OPTIONS[baseLabel] || [['Unitary Substitute']];
   };
 
+  const controlButtonClass =
+    'inline-flex items-center gap-2 rounded-full border border-[#d8cdbf] bg-[#fffaf3] px-3 py-1.5 text-[11px] font-medium tracking-[0.07em] text-[#3f3328] shadow-[0_12px_30px_-24px_rgba(48,34,18,0.85)] transition-colors hover:bg-[#fff3e3]';
+
   return (
-    <div className="h-[100dvh] bg-[#fcfcfc] flex flex-col items-center px-4 py-3 overflow-hidden">
-      <header className="mb-3 text-center">
-        <h1 className="text-3xl font-serif italic mb-1 tracking-tight">Harmonic Analysis Tree</h1>
-        <p className="text-zinc-500 font-serif text-xs uppercase tracking-[0.25em]">Generative Structural Representation</p>
-      </header>
+    <div
+      className="min-h-[100dvh] overflow-hidden px-5 py-4 text-[#1f1a16]"
+      style={{
+        backgroundImage:
+          'radial-gradient(circle at top, rgba(223, 203, 176, 0.6), rgba(248, 243, 236, 0.95) 45%, #f4efe7 100%)',
+      }}
+    >
+      <div className="mx-auto flex h-[calc(100dvh-2rem)] w-full max-w-[1680px] flex-col gap-4">
+        <div className="rounded-[28px] border border-[#e4d8c8] bg-[#fffaf2]/88 px-5 py-4 shadow-[0_22px_72px_-44px_rgba(49,35,18,0.72)] backdrop-blur">
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p className="mb-1 text-[10px] uppercase tracking-[0.3em] text-[#8a7661]">Deterministic Harmonic Grammar</p>
+              <h1 className="scientific-text text-4xl leading-none tracking-tight text-[#241d18]">Harmonic Analysis Tree</h1>
+            </div>
 
-      <div className="flex gap-3 mb-3 items-center">
-        <div className="flex bg-white border border-zinc-200 rounded-full p-0.5 shadow-sm mr-2">
-          <button
-            onClick={() => {
-              setInteractionMode('pointer');
-              setChordInput(null);
-            }}
-            className={`p-2 rounded-full transition-all ${interactionMode === 'pointer' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-zinc-600'}`}
-            title="Pointer Mode (Select & Expand)"
-          >
-            <MousePointer2 size={16} />
-          </button>
-          <button
-            onClick={() => {
-              setInteractionMode('adder');
-              setSelectedNodeId(null);
-              setSelectedGhostId(null);
-            }}
-            className={`p-2 rounded-full transition-all ${interactionMode === 'adder' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-zinc-600'}`}
-            title="Adder Mode (Add Bars & Chords)"
-          >
-            <PlusCircle size={16} />
-          </button>
-        </div>
-
-        <button
-          onClick={addLayer}
-          className="flex items-center gap-2 px-3 py-1.5 bg-white border border-zinc-200 rounded-full hover:bg-zinc-50 transition-colors text-xs font-serif italic shadow-sm"
-        >
-          <Plus size={14} /> Add Layer
-        </button>
-        <button
-          onClick={removeLayer}
-          className="flex items-center gap-2 px-3 py-1.5 bg-white border border-zinc-200 rounded-full hover:bg-zinc-50 transition-colors text-xs font-serif italic shadow-sm"
-        >
-          <Minus size={14} /> Remove Layer
-        </button>
-        <button
-          onClick={resetTree}
-          className="flex items-center gap-2 px-3 py-1.5 bg-white border border-zinc-200 rounded-full hover:bg-zinc-50 transition-colors text-xs font-serif italic shadow-sm"
-        >
-          <RefreshCw size={14} /> Reset
-        </button>
-      </div>
-
-      <div className="w-full max-w-none flex-1 min-h-0 bg-white border border-zinc-100 rounded-3xl shadow-2xl overflow-hidden relative">
-        <div className="absolute top-6 left-6 flex items-center gap-3 z-10 bg-white/50 backdrop-blur-sm p-2 rounded-lg border border-white/20">
-          <input 
-            type="checkbox" 
-            id="bbox-toggle" 
-            checked={showBoundingBoxes} 
-            onChange={(e) => setShowBoundingBoxes(e.target.checked)}
-            className="w-4 h-4 rounded border-zinc-300 text-slate-600 focus:ring-slate-500 cursor-pointer"
-          />
-          <label htmlFor="bbox-toggle" className="text-[10px] font-serif uppercase tracking-widest text-zinc-400 cursor-pointer select-none">
-            Show Bounding Boxes
-          </label>
-        </div>
-
-        <svg
-          ref={svgRef}
-          width="100%"
-          height="100%"
-          viewBox="0 0 1600 900"
-          className={`w-full h-full ${interactionMode === 'adder' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'}`}
-        />
-
-        {contextMenu && (
-          <div
-            className="fixed z-[100] bg-white border border-zinc-200 rounded-xl shadow-2xl py-2 min-w-[180px] animate-in fade-in zoom-in-95 duration-100 context-menu"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
-          >
-            {contextMenu.type === 'background' ? (
-              <button
-                onClick={() => addBar(contextMenu.x, contextMenu.y)}
-                className="w-full text-left px-4 py-2 hover:bg-zinc-50 text-sm font-serif italic flex items-center gap-2 text-zinc-700"
-              >
-                <Plus size={14} /> Add New Bar
-              </button>
-            ) : (
-              <button
-                onClick={() => {
-                  setChordInput({
-                    nodeId: contextMenu.nodeId!,
-                    x: contextMenu.x,
-                    y: contextMenu.y
-                  });
-                  setContextMenu(null);
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-zinc-50 text-sm font-serif italic flex items-center gap-2 text-zinc-700"
-              >
-                <Plus size={14} /> Add Chord
-              </button>
-            )}
-          </div>
-        )}
-
-        {chordInput && (
-          <div
-            className="fixed z-[110] bg-white border border-zinc-200 rounded-xl shadow-2xl p-2 animate-in fade-in zoom-in-95 duration-100 chord-input-container"
-            style={{ left: chordInput.x, top: chordInput.y }}
-          >
-            <input
-              autoFocus
-              type="text"
-              placeholder="Chord name..."
-              className="px-3 py-1.5 text-sm font-serif italic border border-zinc-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-zinc-200 w-40"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  addChord(chordInput.nodeId, (e.target as HTMLInputElement).value);
-                } else if (e.key === 'Escape') {
-                  setChordInput(null);
-                }
-              }}
-            />
-          </div>
-        )}
-
-        {selectedNodeId && (
-          <div className="absolute top-6 right-6 bg-white/80 backdrop-blur border border-zinc-200 rounded-xl p-4 shadow-xl animate-in fade-in slide-in-from-top-2">
-            <p className="text-[10px] font-serif uppercase tracking-widest text-zinc-400 mb-3">Keyboard Controls</p>
-            <div className="flex flex-col gap-2 text-[11px] font-serif italic text-zinc-600">
-              <div className="flex justify-between gap-6"><span>Cycle Options</span> <span className="font-sans not-italic font-bold text-zinc-400">TAB / SPACE</span></div>
-              <div className="flex justify-between gap-6"><span>Stage Ghost</span> <span className="font-sans not-italic font-bold text-zinc-400">CLICK GHOST</span></div>
-              <div className="flex justify-between gap-6"><span>Confirm Staged</span> <span className="font-sans not-italic font-bold text-zinc-400">CLICK AGAIN / ENTER</span></div>
-              <div className="flex justify-between gap-6"><span>Cancel</span> <span className="font-sans not-italic font-bold text-zinc-400">ESC</span></div>
+            <div className="max-w-xl text-right text-[12px] leading-5 text-[#6a5c4f]">
+              Tidy-tree spacing with explicit bar packing keeps branches stable while preserving substitutions and key regions.
             </div>
           </div>
-        )}
-      </div>
 
-      <footer className="mt-3 text-zinc-400 font-serif text-xs italic">
-        Tip: Drag nodes to reposition. Use the pointer tool to expand chords or the adder tool to add bars and chords.
-      </footer>
+          <div className="flex flex-wrap items-center gap-2.5 border-t border-[#e8dccd] pt-3">
+            <div className="mr-2 flex rounded-full border border-[#dacdbd] bg-white/80 p-1 shadow-inner">
+              <button
+                onClick={() => {
+                  setInteractionMode('pointer');
+                  setChordInput(null);
+                }}
+                className={`rounded-full px-3 py-2 transition-colors ${
+                  interactionMode === 'pointer' ? 'bg-[#f0dfc5] text-[#5f3d1f]' : 'text-[#8c7a67] hover:text-[#5f3d1f]'
+                }`}
+                title="Pointer Mode"
+              >
+                <MousePointer2 size={16} />
+              </button>
+              <button
+                onClick={() => {
+                  setInteractionMode('adder');
+                  setSelectedNodeId(null);
+                  setSelectedGhostId(null);
+                }}
+                className={`rounded-full px-3 py-2 transition-colors ${
+                  interactionMode === 'adder' ? 'bg-[#f0dfc5] text-[#5f3d1f]' : 'text-[#8c7a67] hover:text-[#5f3d1f]'
+                }`}
+                title="Adder Mode"
+              >
+                <PlusCircle size={16} />
+              </button>
+            </div>
+
+            <button onClick={addAutumnLeavesSection} className={controlButtonClass} title="Add an 8-bar Autumn Leaves sample section">
+              <Plus size={14} /> Add Autumn Leaves
+            </button>
+            <button onClick={removeLayer} className={controlButtonClass}>
+              <Minus size={14} /> Remove Layer
+            </button>
+            <button onClick={resetTree} className={controlButtonClass}>
+              <RefreshCw size={14} /> Reset
+            </button>
+            <button onClick={sendProgression} disabled={isSendingProgression} className={`${controlButtonClass} disabled:opacity-50 disabled:cursor-not-allowed`}>
+              <Download size={14} /> {isSendingProgression ? 'Sending...' : 'Send'}
+            </button>
+            <button onClick={fetchSuggestions} disabled={isLoadingSuggestions} className={`${controlButtonClass} disabled:opacity-50 disabled:cursor-not-allowed`}>
+              {isLoadingSuggestions ? 'Suggesting...' : 'Suggest'}
+            </button>
+
+            <div className="ml-auto flex items-center gap-3 rounded-full border border-[#dbcdbb] bg-white/75 px-3 py-1.5 text-[10px] uppercase tracking-[0.2em] text-[#7d6955]">
+              <input
+                type="checkbox"
+                id="bbox-toggle"
+                checked={showBoundingBoxes}
+                onChange={(event) => setShowBoundingBoxes(event.target.checked)}
+                className="h-3.5 w-3.5 cursor-pointer rounded border-[#cdbca7] text-[#8c5a2b] focus:ring-[#c89d67]"
+              />
+              <label htmlFor="bbox-toggle" className="cursor-pointer select-none">
+                Structure Boxes
+              </label>
+            </div>
+          </div>
+
+          {sendStatus && <p className="mt-2 text-[11px] italic text-[#6e6154]">{sendStatus}</p>}
+        </div>
+
+        <div className="relative flex-1 overflow-hidden rounded-[34px] border border-[#e4d7c6] bg-[#fffdf8] shadow-[0_44px_140px_-70px_rgba(45,31,15,0.85)]">
+          <div
+            className="pointer-events-none absolute inset-0 opacity-95"
+            style={{
+              backgroundImage:
+                'radial-gradient(circle at top, rgba(201, 165, 113, 0.17), transparent 30%), linear-gradient(180deg, rgba(255, 254, 251, 0.98), rgba(255, 249, 240, 0.92)), linear-gradient(rgba(183, 165, 134, 0.16) 1px, transparent 1px), linear-gradient(90deg, rgba(183, 165, 134, 0.08) 1px, transparent 1px)',
+              backgroundSize: '100% 100%, 100% 100%, 100% 140px, 120px 100%',
+            }}
+          />
+
+          <div
+            className="pointer-events-none absolute inset-x-0 top-0 h-40"
+            style={{ background: 'radial-gradient(circle at top, rgba(255, 255, 255, 0.95), transparent 68%)' }}
+          />
+
+          <svg
+            ref={svgRef}
+            width="100%"
+            height="100%"
+            viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}
+            className={`relative z-[1] h-full w-full ${interactionMode === 'adder' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'}`}
+          />
+
+          {contextMenu && (
+            <div
+              className="context-menu fixed z-[100] min-w-[190px] rounded-2xl border border-[#e3d6c4] bg-[#fffaf4] py-2 shadow-[0_24px_80px_-40px_rgba(47,32,16,0.9)]"
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+            >
+              {contextMenu.type === 'background' ? (
+                <button
+                  onClick={() => addBar(contextMenu.x, contextMenu.y)}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-[#5b4d40] transition-colors hover:bg-[#fff1df]"
+                >
+                  <Plus size={14} /> Add New Bar
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    setChordInput({
+                      nodeId: contextMenu.nodeId!,
+                      x: contextMenu.x,
+                      y: contextMenu.y,
+                    });
+                    setContextMenu(null);
+                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-[#5b4d40] transition-colors hover:bg-[#fff1df]"
+                >
+                  <Plus size={14} /> Add Chord
+                </button>
+              )}
+            </div>
+          )}
+
+          {chordInput && (
+            <div
+              className="chord-input-container fixed z-[110] rounded-2xl border border-[#e3d6c4] bg-[#fffaf4] p-2 shadow-[0_24px_80px_-40px_rgba(47,32,16,0.9)]"
+              style={{ left: chordInput.x, top: chordInput.y }}
+            >
+              <input
+                autoFocus
+                type="text"
+                placeholder="Chord name..."
+                className="w-44 rounded-xl border border-[#eadfce] bg-white px-3 py-2 text-sm text-[#3f3328] outline-none ring-0 placeholder:text-[#9b8873] focus:border-[#cda16a]"
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    addChord(chordInput.nodeId, (event.target as HTMLInputElement).value);
+                  } else if (event.key === 'Escape') {
+                    setChordInput(null);
+                  }
+                }}
+              />
+            </div>
+          )}
+
+          {(isLoadingOverlap || overlapError || fretboardOverlap) && (
+            <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 flex justify-end">
+              <div className="pointer-events-auto w-full max-w-[560px] rounded-[14px] border border-[#dfd3c4] bg-[#fffaf3]/92 p-2 shadow-[0_18px_60px_-44px_rgba(47,32,16,0.82)] backdrop-blur">
+                <div className="mb-1 flex items-center justify-between">
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-[#8a7661]">Voicing Overlap</p>
+                  {isLoadingOverlap && <span className="text-[10px] text-[#8a7661]">Loading...</span>}
+                </div>
+                {overlapError && <p className="mb-1 text-[11px] text-[#8a4f4f]">{overlapError}</p>}
+                {fretboardOverlap && <TranslucentFretboard data={fretboardOverlap} className="border-0 bg-transparent p-0 shadow-none" />}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <footer className="flex flex-wrap items-center justify-between gap-3 rounded-[22px] border border-[#e4d7c7] bg-[#fffaf2]/80 px-5 py-3 text-[13px] text-[#6f6153] shadow-[0_18px_60px_-44px_rgba(47,32,16,0.75)] backdrop-blur">
+          <span>Pan/zoom the canvas, click nodes to stage ghost substitutions, and use Suggest to refresh harmonic territories.</span>
+          <span className="uppercase tracking-[0.2em] text-[#8a7661]">
+            Depth {treeDepth} • {trees.length} bar{trees.length === 1 ? '' : 's'}
+          </span>
+        </footer>
+      </div>
     </div>
   );
 }

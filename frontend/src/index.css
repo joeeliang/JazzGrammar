@@ -1,16 +1,28 @@
-@import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-serif: "Libre Baskerville", serif;
+  --font-display: "Cormorant Garamond", serif;
+  --font-ui: "IBM Plex Sans", sans-serif;
+}
+
+:root {
+  color: #1f1a16;
+  background: #f4efe7;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
 }
 
 body {
-  background-color: #fcfcfc;
-  color: #1a1a1a;
+  margin: 0;
   overflow: hidden;
+  font-family: var(--font-ui);
 }
 
 .scientific-text {
-  font-family: var(--font-serif);
+  font-family: var(--font-display);
 }
