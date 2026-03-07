@@ -43,6 +43,13 @@ class FretboardOverlapPayload(BaseModel):
 
 app = FastAPI(title="Chord Progression API")
 
+default_allowed_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
 allowed_origins = [
     origin.strip()
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
@@ -51,7 +58,7 @@ allowed_origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins or ["http://localhost:5173"],
+    allow_origins=allowed_origins or default_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

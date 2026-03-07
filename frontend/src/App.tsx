@@ -51,6 +51,8 @@ interface KeyRegionCloud {
   startBarIndex: number;
   endBarIndex: number;
   key: string;
+  startLeafIndex?: number;
+  endLeafIndex?: number;
 }
 
 interface ContextMenuState {
@@ -79,10 +81,14 @@ const VIEWBOX_HEIGHT = 1100;
 const MARGIN = { top: 140, right: 180, bottom: 220, left: 180 };
 const HORIZONTAL_STEP = 92;
 const LAYER_GAP = 140;
-const BAR_GAP = 220;
-const MIN_BAR_WIDTH = 280;
-const NODE_RADIUS = 6;
-const TRANSITION_MS = 550;
+const BAR_GAP = 90;
+const MIN_BAR_WIDTH = 150;
+const NODE_RADIUS = 10;
+const TRANSITION_MS = 350;
+const ROOT_NODE_LABEL_FONT_SIZE = 12;
+const NODE_LABEL_FONT_SIZE = 18;
+const TERMINAL_LABEL_FONT_SIZE = 17;
+const KEY_REGION_LABEL_FONT_SIZE = 11;
 
 // Tunable visual parameters for key-region clouds.
 // cloudHorizontalPadding: extra horizontal space beyond the region subtree width.
@@ -245,7 +251,11 @@ const positionForest = (trees: TreeNode[], innerWidth: number) => {
   const globalMax = d3.max(packedItems, (item) => item.center + item.maxX) ?? innerWidth;
   const contentWidth = Math.max(globalMax - globalMin, MIN_BAR_WIDTH);
   const hasManualPlacement = trees.some((tree) => typeof tree.initialX === 'number');
-  const offsetX = !hasManualPlacement && contentWidth < innerWidth ? (innerWidth - contentWidth) / 2 - globalMin : -globalMin;
+  const offsetX = hasManualPlacement
+    ? 0
+    : contentWidth < innerWidth
+      ? (innerWidth - contentWidth) / 2 - globalMin
+      : -globalMin;
 
   let maxDepth = 0;
 
@@ -339,22 +349,30 @@ export default function App() {
       return { x: 0, y: 0 };
     }
 
+    const mainGroup = svg.querySelector<SVGGElement>('g.main-group');
+    if (mainGroup) {
+      const point = svg.createSVGPoint();
+      point.x = screenX;
+      point.y = screenY;
+
+      const groupMatrix = mainGroup.getScreenCTM();
+      if (groupMatrix) {
+        const local = point.matrixTransform(groupMatrix.inverse());
+        return { x: local.x, y: local.y };
+      }
+    }
+
     const point = svg.createSVGPoint();
     point.x = screenX;
     point.y = screenY;
-
     const screenMatrix = svg.getScreenCTM();
     if (!screenMatrix) {
       return { x: 0, y: 0 };
     }
-
     const svgPoint = point.matrixTransform(screenMatrix.inverse());
-    const zoomTransform = d3.zoomTransform(svg);
-    const [zoomedX, zoomedY] = zoomTransform.invert([svgPoint.x, svgPoint.y]);
-
     return {
-      x: zoomedX - MARGIN.left,
-      y: zoomedY - MARGIN.top,
+      x: svgPoint.x - MARGIN.left,
+      y: svgPoint.y - MARGIN.top,
     };
   };
 
@@ -701,6 +719,15 @@ export default function App() {
 
       const body = (await response.json()) as SuggestionResponse;
       console.log('Suggestion response:', body);
+      console.log(
+        'Suggestion key stream:',
+        body.suggestions.map((entry, index) => ({
+          index,
+          input: entry.input,
+          key: entry.key,
+          inferred_key: body.inferred_keys[index],
+        })),
+      );
 
       const substitutionsByLeafId: Record<string, string[]> = {};
       leafEntries.forEach((entry) => {
@@ -718,14 +745,32 @@ export default function App() {
 
       const keysByBar = new Map<number, string[]>();
       leafEntries.forEach((entry, index) => {
-        const key = body.inferred_keys[index];
+        const key = body.suggestions[index]?.key || body.inferred_keys[index];
         if (!key) {
+          console.warn('Missing key for leaf entry:', {
+            index,
+            nodeId: entry.nodeId,
+            chord: entry.label,
+            barIndex: entry.barIndex,
+          });
           return;
         }
         const existing = keysByBar.get(entry.barIndex) || [];
         existing.push(key);
         keysByBar.set(entry.barIndex, existing);
       });
+      console.log(
+        'Leaf entries in display order:',
+        leafEntries.map((entry, index) => ({
+          index,
+          nodeId: entry.nodeId,
+          chord: entry.label,
+          barIndex: entry.barIndex,
+          leafIndex: entry.leafIndex,
+          resolvedKey: body.suggestions[index]?.key || body.inferred_keys[index] || null,
+        })),
+      );
+      console.log('keysByBar:', Array.from(keysByBar.entries()));
 
       const barKeys = trees.map((_, barIndex) => {
         const keyList = keysByBar.get(barIndex) || [];
@@ -736,56 +781,76 @@ export default function App() {
         keyList.forEach((key) => counts.set(key, (counts.get(key) || 0) + 1));
         return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
       });
+      console.log('barKeys:', barKeys);
+
+      const leafKeys = leafEntries.map((entry, index) => ({
+        key: body.suggestions[index]?.key || body.inferred_keys[index] || null,
+        barIndex: entry.barIndex,
+      }));
+      console.log('leafKeys:', leafKeys);
 
       const regions: KeyRegionCloud[] = [];
       let currentKey: string | null = null;
-      let currentStart = -1;
+      let currentStartLeaf = -1;
       let regionIndex = 0;
 
-      barKeys.forEach((barKey, barIndex) => {
-        if (!barKey) {
+      leafKeys.forEach((entry, leafIndex) => {
+        if (!entry.key) {
           if (currentKey !== null) {
+            const startBar = leafKeys[currentStartLeaf]?.barIndex ?? 0;
+            const endBar = leafKeys[Math.max(currentStartLeaf, leafIndex - 1)]?.barIndex ?? startBar;
             regions.push({
               regionIndex,
-              startBarIndex: currentStart,
-              endBarIndex: barIndex - 1,
+              startBarIndex: startBar,
+              endBarIndex: endBar,
               key: currentKey,
+              startLeafIndex: currentStartLeaf,
+              endLeafIndex: leafIndex - 1,
             });
             regionIndex += 1;
             currentKey = null;
-            currentStart = -1;
+            currentStartLeaf = -1;
           }
           return;
         }
 
         if (currentKey === null) {
-          currentKey = barKey;
-          currentStart = barIndex;
+          currentKey = entry.key;
+          currentStartLeaf = leafIndex;
           return;
         }
 
-        if (barKey !== currentKey) {
+        if (entry.key !== currentKey) {
+          const startBar = leafKeys[currentStartLeaf]?.barIndex ?? 0;
+          const endBar = leafKeys[Math.max(currentStartLeaf, leafIndex - 1)]?.barIndex ?? startBar;
           regions.push({
             regionIndex,
-            startBarIndex: currentStart,
-            endBarIndex: barIndex - 1,
+            startBarIndex: startBar,
+            endBarIndex: endBar,
             key: currentKey,
+            startLeafIndex: currentStartLeaf,
+            endLeafIndex: leafIndex - 1,
           });
           regionIndex += 1;
-          currentKey = barKey;
-          currentStart = barIndex;
+          currentKey = entry.key;
+          currentStartLeaf = leafIndex;
         }
       });
 
       if (currentKey !== null) {
+        const startBar = leafKeys[currentStartLeaf]?.barIndex ?? 0;
+        const endBar = leafKeys[leafKeys.length - 1]?.barIndex ?? startBar;
         regions.push({
           regionIndex,
-          startBarIndex: currentStart,
-          endBarIndex: barKeys.length - 1,
+          startBarIndex: startBar,
+          endBarIndex: endBar,
           key: currentKey,
+          startLeafIndex: currentStartLeaf,
+          endLeafIndex: leafKeys.length - 1,
         });
       }
 
+      console.log('Detected key-region clouds:', regions);
       setKeyRegionClouds(regions);
     } catch (error) {
       console.error('Failed to fetch suggestions:', error);
@@ -920,18 +985,35 @@ export default function App() {
       .attr('opacity', 0);
 
     cloudEnter.append('rect');
-    cloudEnter.append('text').attr('class', 'scientific-text').attr('font-size', 11).attr('font-style', 'italic');
+    cloudEnter
+      .append('text')
+      .attr('class', 'scientific-text')
+      .attr('font-size', KEY_REGION_LABEL_FONT_SIZE)
+      .attr('font-style', 'italic');
 
     const cloudUpdate = cloudEnter.merge(cloudSelection as any);
+    const orderedLeaves = [...leaves].sort((a, b) => a.layoutX - b.layoutX);
 
     cloudUpdate.each(function (region: KeyRegionCloud) {
-      const regionRoots = roots.slice(region.startBarIndex, region.endBarIndex + 1);
-      if (regionRoots.length === 0) {
-        return;
+      let minX = 0;
+      let maxX = 0;
+
+      if (typeof region.startLeafIndex === 'number' && typeof region.endLeafIndex === 'number') {
+        const regionLeaves = orderedLeaves.slice(region.startLeafIndex, region.endLeafIndex + 1);
+        if (regionLeaves.length === 0) {
+          return;
+        }
+        minX = d3.min(regionLeaves, (leaf) => leaf.layoutX - getNodeHalfWidth(leaf)) ?? 0;
+        maxX = d3.max(regionLeaves, (leaf) => leaf.layoutX + getNodeHalfWidth(leaf)) ?? 0;
+      } else {
+        const regionRoots = roots.slice(region.startBarIndex, region.endBarIndex + 1);
+        if (regionRoots.length === 0) {
+          return;
+        }
+        minX = d3.min(regionRoots, (root) => root.subtreeMinX) ?? 0;
+        maxX = d3.max(regionRoots, (root) => root.subtreeMaxX) ?? 0;
       }
 
-      const minX = d3.min(regionRoots, (root) => root.subtreeMinX) ?? 0;
-      const maxX = d3.max(regionRoots, (root) => root.subtreeMaxX) ?? 0;
       const yTop = KEY_REGION_VISUALS.cloudTopOffset;
       const yBottom = terminalY + KEY_REGION_VISUALS.cloudBottomExtra;
       const x = minX - KEY_REGION_VISUALS.cloudHorizontalPadding;
@@ -1191,7 +1273,7 @@ export default function App() {
       .attr('opacity', (node: PositionedNode) => (shouldShowInlineLabel(node) ? 1 : 0))
       .attr('dy', (node: PositionedNode) => (!node.parent ? -32 : -18))
       .attr('fill', (node: PositionedNode) => (!node.parent ? '#6f655c' : node.data.isPreview ? '#9a622c' : '#241d18'))
-      .attr('font-size', (node: PositionedNode) => (!node.parent ? 12 : 18))
+      .attr('font-size', (node: PositionedNode) => (!node.parent ? ROOT_NODE_LABEL_FONT_SIZE : NODE_LABEL_FONT_SIZE))
       .attr('font-style', (node: PositionedNode) => (!node.parent ? 'normal' : 'italic'))
       .attr('font-weight', (node: PositionedNode) => (!node.parent ? 600 : 500))
       .attr('letter-spacing', (node: PositionedNode) => (!node.parent ? '0.18em' : '0.02em'));
@@ -1213,7 +1295,7 @@ export default function App() {
       .attr('class', 'terminal-label scientific-text')
       .attr('text-anchor', 'middle')
       .attr('fill', '#241d18')
-      .attr('font-size', 17)
+      .attr('font-size', TERMINAL_LABEL_FONT_SIZE)
       .attr('font-style', 'italic')
       .attr('opacity', 0)
       .attr('x', (leaf) => getStartingPoint(leaf).x)
@@ -1361,20 +1443,6 @@ export default function App() {
         </div>
 
         <div className="relative flex-1 overflow-hidden rounded-[34px] border border-[#e4d7c6] bg-[#fffdf8] shadow-[0_44px_140px_-70px_rgba(45,31,15,0.85)]">
-          <div
-            className="pointer-events-none absolute inset-0 opacity-95"
-            style={{
-              backgroundImage:
-                'radial-gradient(circle at top, rgba(201, 165, 113, 0.17), transparent 30%), linear-gradient(180deg, rgba(255, 254, 251, 0.98), rgba(255, 249, 240, 0.92)), linear-gradient(rgba(183, 165, 134, 0.16) 1px, transparent 1px), linear-gradient(90deg, rgba(183, 165, 134, 0.08) 1px, transparent 1px)',
-              backgroundSize: '100% 100%, 100% 100%, 100% 140px, 120px 100%',
-            }}
-          />
-
-          <div
-            className="pointer-events-none absolute inset-x-0 top-0 h-40"
-            style={{ background: 'radial-gradient(circle at top, rgba(255, 255, 255, 0.95), transparent 68%)' }}
-          />
-
           <svg
             ref={svgRef}
             width="100%"
