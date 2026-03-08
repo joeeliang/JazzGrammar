@@ -1155,8 +1155,8 @@ export default function App() {
         target
           .transition()
           .duration(120)
-          .attr('fill', '#edf1f5')
-          .attr('stroke', 'rgba(0,0,0,0.2)')
+          .attr('fill', '#f4e7d4')
+          .attr('stroke', '#b67a3c')
           .style('filter', 'drop-shadow(0 2px 8px rgba(0,0,0,0.08))');
       })
       .on('mouseleave', function (event: any, node: PositionedNode) {
@@ -1167,8 +1167,8 @@ export default function App() {
         target
           .transition()
           .duration(120)
-          .attr('fill', '#f6f7f9')
-          .attr('stroke', 'rgba(0,0,0,0.12)')
+          .attr('fill', '#fff4e4')
+          .attr('stroke', '#bfa388')
           .style('filter', 'none');
       })
       .on('click', (event: any, node: PositionedNode) => {
@@ -1251,14 +1251,14 @@ export default function App() {
       .attr('rx', NODE_CORNER_RADIUS)
       .attr('ry', NODE_CORNER_RADIUS)
       .attr('fill', (node: PositionedNode) => {
-        if (node.data.id === selectedGhostId) return '#f4e7d4';
-        if (node.data.id === selectedNodeId) return '#e9eef5';
-        return '#f6f7f9';
+        if (node.data.id === selectedGhostId) return '#f0dfc5';
+        if (node.data.id === selectedNodeId) return '#f1dec1';
+        return '#fff4e4';
       })
       .attr('stroke', (node: PositionedNode) => {
-        if (node.data.id === selectedGhostId) return '#b67a3c';
-        if (node.data.id === selectedNodeId) return '#5b7fab';
-        return 'rgba(0,0,0,0.12)';
+        if (node.data.id === selectedGhostId) return '#7f4f20';
+        if (node.data.id === selectedNodeId) return '#9a622c';
+        return '#bfa388';
       })
       .attr('stroke-width', (node: PositionedNode) => (node.data.id === selectedNodeId || node.data.id === selectedGhostId ? 1.8 : 1))
       .style('filter', (node: PositionedNode) =>
@@ -1274,7 +1274,7 @@ export default function App() {
       .attr('x', 0)
       .attr('y', 0)
       .attr('opacity', 1)
-      .attr('fill', '#111827')
+      .attr('fill', '#3f3328')
       .attr('font-size', CHORD_NODE_FONT_SIZE)
       .attr('font-style', 'normal')
       .attr('font-weight', CHORD_NODE_FONT_WEIGHT)
