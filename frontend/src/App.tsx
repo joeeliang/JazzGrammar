@@ -117,66 +117,14 @@ const KEY_REGION_COLORS = ['#c8d3e0', '#d9d2c6', '#ccd9cf', '#d5cfe0', '#d8d8c8'
 
 const MUSICAL_LABELS = ['I', 'ii', 'iii', 'IV', 'V', 'vi', 'vii°', 'V⁷', 'ii⁷', 'vi⁷', 'IV⁶', 'I⁶', 'V/V', 'V/IV'];
 const CHORD_NAMES = ['C', 'Dm', 'Em', 'F', 'G', 'Am', 'Bdim', 'G7', 'Dm7', 'Am7', 'F6', 'Cmaj7', 'Fm', 'Gm7'];
-<<<<<<< ours
-<<<<<<< ours
-=======
-=======
-<<<<<<< ours
->>>>>>> theirs
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-const PROGRESSION_API_URL = (import.meta.env.VITE_PROGRESSION_API_URL as string | undefined)?.trim() || 'http://localhost:8000/progression';
-const SUGGESTIONS_API_URL = (import.meta.env.VITE_SUGGESTIONS_API_URL as string | undefined)?.trim() || 'http://localhost:8000/suggestions';
-const OVERLAP_API_URL = (import.meta.env.VITE_OVERLAP_API_URL as string | undefined)?.trim() || 'http://localhost:8000/fretboard-overlap';
-const CHORD_IDENTIFY_API_URL =
-  (import.meta.env.VITE_CHORD_IDENTIFY_URL as string | undefined)?.trim() || 'http://localhost:8000/identify-chord';
-=======
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-<<<<<<< ours
-=======
->>>>>>> theirs
->>>>>>> theirs
 const PROGRESSION_API_URL =
   (import.meta.env.VITE_PROGRESSION_API_URL as string | undefined)?.trim() || '/progression';
 const SUGGESTIONS_API_URL =
   (import.meta.env.VITE_SUGGESTIONS_API_URL as string | undefined)?.trim() || '/suggestions';
 const OVERLAP_API_URL =
   (import.meta.env.VITE_OVERLAP_API_URL as string | undefined)?.trim() || '/fretboard-overlap';
-<<<<<<< ours
-<<<<<<< ours
-=======
 const CHORD_IDENTIFY_API_URL =
   (import.meta.env.VITE_CHORD_IDENTIFY_URL as string | undefined)?.trim() || '/identify-chord';
-
-
-=======
-<<<<<<< ours
->>>>>>> theirs
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-<<<<<<< ours
-=======
->>>>>>> theirs
->>>>>>> theirs
 
 const EXPANSION_OPTIONS: Record<string, string[][]> = {
   I: [['vi', 'ii', 'V', 'I'], ['IV', 'vii°', 'iii', 'vi'], ['I', 'V', 'vi', 'IV']],
