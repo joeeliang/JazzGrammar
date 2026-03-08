@@ -51,6 +51,7 @@ const STRING_LABELS = ['e', 'B', 'G', 'D', 'A', 'E'];
 
 const MAX_FRET = 12;
 const buildEmptyFrets = () => [null, null, null, null, null, null] as Array<number | null>;
+const AUTO_IDENTIFY_DEBOUNCE_MS = 180;
 
 const clampWindow = (window: [number, number]): [number, number] => {
   const start = Math.max(0, Math.floor(window[0]));
@@ -408,6 +409,18 @@ export function ChordPickerCard({
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (frets.every((fret) => fret === null)) {
+      setCandidates([]);
+      setError(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void identify();
+    }, AUTO_IDENTIFY_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [frets]);
 
   return (
     <div

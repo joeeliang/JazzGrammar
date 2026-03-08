@@ -79,16 +79,17 @@ type PositionedLink = {
 const VIEWBOX_WIDTH = 1800;
 const VIEWBOX_HEIGHT = 1100;
 const MARGIN = { top: 140, right: 180, bottom: 220, left: 180 };
-const HORIZONTAL_STEP = 92;
-const LAYER_GAP = 140;
-const BAR_GAP = 90;
-const MIN_BAR_WIDTH = 150;
-const NODE_CORNER_RADIUS = 10;
+const HORIZONTAL_STEP = 110;
+const LAYER_GAP = 160;
+const BAR_GAP = 100;
+const MIN_BAR_WIDTH = 160;
+const NODE_CORNER_RADIUS = 20;
 const TRANSITION_MS = 350;
 const KEY_REGION_LABEL_FONT_SIZE = 11;
-const CHORD_NODE_FONT_SIZE = 13;
+const CHORD_NODE_FONT_SIZE = 15;
 const CHORD_NODE_FONT_WEIGHT = 500;
-const CHORD_NODE_MIN_HEIGHT = 28;
+const CHORD_NODE_MIN_WIDTH = 64;
+const CHORD_NODE_MIN_HEIGHT = 44;
 const CHORD_NODE_PADDING_X = 10;
 const CHORD_NODE_PADDING_Y = 6;
 
@@ -117,14 +118,17 @@ const KEY_REGION_COLORS = ['#c8d3e0', '#d9d2c6', '#ccd9cf', '#d5cfe0', '#d8d8c8'
 
 const MUSICAL_LABELS = ['I', 'ii', 'iii', 'IV', 'V', 'vi', 'vii°', 'V⁷', 'ii⁷', 'vi⁷', 'IV⁶', 'I⁶', 'V/V', 'V/IV'];
 const CHORD_NAMES = ['C', 'Dm', 'Em', 'F', 'G', 'Am', 'Bdim', 'G7', 'Dm7', 'Am7', 'F6', 'Cmaj7', 'Fm', 'Gm7'];
-const PROGRESSION_API_URL =
-  (import.meta.env.VITE_PROGRESSION_API_URL as string | undefined)?.trim() || '/progression';
-const SUGGESTIONS_API_URL =
-  (import.meta.env.VITE_SUGGESTIONS_API_URL as string | undefined)?.trim() || '/suggestions';
-const OVERLAP_API_URL =
-  (import.meta.env.VITE_OVERLAP_API_URL as string | undefined)?.trim() || '/fretboard-overlap';
-const CHORD_IDENTIFY_API_URL =
-  (import.meta.env.VITE_CHORD_IDENTIFY_URL as string | undefined)?.trim() || '/identify-chord';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
+const resolveApiUrl = (path: string, specific?: string) => {
+  const direct = specific?.trim();
+  if (direct) return direct;
+  if (API_BASE_URL) return `${API_BASE_URL.replace(/\/+$/, '')}${path}`;
+  return path;
+};
+const PROGRESSION_API_URL = resolveApiUrl('/progression', import.meta.env.VITE_PROGRESSION_API_URL as string | undefined);
+const SUGGESTIONS_API_URL = resolveApiUrl('/suggestions', import.meta.env.VITE_SUGGESTIONS_API_URL as string | undefined);
+const OVERLAP_API_URL = resolveApiUrl('/fretboard-overlap', import.meta.env.VITE_OVERLAP_API_URL as string | undefined);
+const CHORD_IDENTIFY_API_URL = resolveApiUrl('/identify-chord', import.meta.env.VITE_CHORD_IDENTIFY_URL as string | undefined);
 
 const EXPANSION_OPTIONS: Record<string, string[][]> = {
   I: [['vi', 'ii', 'V', 'I'], ['IV', 'vii°', 'iii', 'vi'], ['I', 'V', 'vi', 'IV']],
@@ -158,7 +162,7 @@ const getMaxDepth = (trees: TreeNode[]) => {
   return Math.max(...trees.map(getTreeDepth));
 };
 
-const estimateLabelSpan = (label: string) => Math.max(28, label.length * 7.2 + CHORD_NODE_PADDING_X * 2);
+const estimateLabelSpan = (label: string) => Math.max(CHORD_NODE_MIN_WIDTH, label.length * 7.2 + CHORD_NODE_PADDING_X * 2);
 
 const getNodeHalfWidth = (node: d3.HierarchyNode<TreeNode>) => {
   return estimateLabelSpan(node.data.label) / 2;
@@ -318,13 +322,13 @@ const positionForest = (trees: TreeNode[], innerWidth: number) => {
 export default function App() {
   const svgRef = useRef<SVGSVGElement>(null);
   const nodePositionRef = useRef(new Map<string, { x: number; y: number }>());
+  const autoSuggestAfterTreeChangeRef = useRef(false);
 
   const [trees, setTrees] = useState<TreeNode[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedGhostId, setSelectedGhostId] = useState<string | null>(null);
   const [previewOptionIndex, setPreviewOptionIndex] = useState(0);
   const [currentPreviewLabels, setCurrentPreviewLabels] = useState<string[]>([]);
-  const [showBoundingBoxes, setShowBoundingBoxes] = useState(false);
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('pointer');
   const [chordPicker, setChordPicker] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -586,6 +590,7 @@ export default function App() {
     setOverlapError(null);
     setContextMenu(null);
     setChordPicker(null);
+    autoSuggestAfterTreeChangeRef.current = true;
   };
 
   const findNodeLabelById = (nodeId: string): string | null => {
@@ -686,7 +691,9 @@ export default function App() {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        const errorBody = await response.json().catch(() => ({}));
+        const detail = typeof errorBody?.detail === 'string' ? errorBody.detail : `HTTP ${response.status}`;
+        throw new Error(detail);
       }
 
       const body = await response.json();
@@ -905,10 +912,37 @@ export default function App() {
     const innerWidth = width - MARGIN.left - MARGIN.right;
 
     const svg = d3.select(svgRef.current);
+
+    // Grid pattern for depth
+    const defs = svg.select('defs').empty() ? svg.append('defs') : svg.select('defs');
+    if (defs.select('#grid-pattern').empty()) {
+      const pattern = defs
+        .append('pattern')
+        .attr('id', 'grid-pattern')
+        .attr('width', 40)
+        .attr('height', 40)
+        .attr('patternUnits', 'userSpaceOnUse');
+
+      pattern.append('circle').attr('cx', 2).attr('cy', 2).attr('r', 1).attr('fill', '#e5dcd0').attr('opacity', 0.6);
+    }
+
     const zoomGroup =
       svg.select<SVGGElement>('g.zoom-group').empty()
         ? svg.append('g').attr('class', 'zoom-group')
         : svg.select<SVGGElement>('g.zoom-group');
+
+    // Background rect for grid
+    if (zoomGroup.select('rect.grid-bg').empty()) {
+      zoomGroup
+        .insert('rect', ':first-child')
+        .attr('class', 'grid-bg')
+        .attr('x', -VIEWBOX_WIDTH * 2)
+        .attr('y', -VIEWBOX_HEIGHT * 2)
+        .attr('width', VIEWBOX_WIDTH * 5)
+        .attr('height', VIEWBOX_HEIGHT * 5)
+        .attr('fill', 'url(#grid-pattern)')
+        .attr('pointer-events', 'none');
+    }
 
     const mainGroup =
       zoomGroup.select<SVGGElement>('g.main-group').empty()
@@ -922,7 +956,7 @@ export default function App() {
 
     const zoom = d3
       .zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.35, 2.5])
+      .scaleExtent([0.25, 3.0])
       .on('zoom', (event) => {
         zoomGroup.attr('transform', event.transform.toString());
       });
@@ -1055,26 +1089,6 @@ export default function App() {
 
     cloudUpdate.transition(transition).attr('opacity', 1);
 
-    const bbox = mainGroup
-      .selectAll<SVGRectElement, PositionedNode>('rect.tree-bounds')
-      .data(showBoundingBoxes ? nodes : [], (node: any) => node.data.id);
-
-    bbox.exit().remove();
-
-    bbox
-      .enter()
-      .append('rect')
-      .attr('class', 'tree-bounds pointer-events-none')
-      .attr('rx', 18)
-      .attr('fill', 'rgba(194, 153, 97, 0.05)')
-      .attr('stroke', 'rgba(169, 124, 61, 0.28)')
-      .attr('stroke-dasharray', '5 5')
-      .merge(bbox as any)
-      .transition(transition)
-      .attr('x', (node) => node.subtreeMinX - 18)
-      .attr('y', (node) => node.layoutY - 26)
-      .attr('width', (node) => Math.max(36, node.subtreeMaxX - node.subtreeMinX + 36))
-      .attr('height', (node) => Math.max(48, node.height * LAYER_GAP + 52));
 
     const linkSelection = mainGroup
       .selectAll<SVGPathElement, PositionedLink>('path.link')
@@ -1096,9 +1110,9 @@ export default function App() {
 
     linkEnter
       .merge(linkSelection as any)
-      .attr('stroke', (link: PositionedLink) => (link.target.data.isPreview ? '#b37a3c' : '#3f3328'))
-      .attr('stroke-width', (link: PositionedLink) => (link.target.data.isPreview ? 1.2 : 1.35))
-      .attr('stroke-dasharray', (link: PositionedLink) => (link.target.data.isPreview ? '4 6' : 'none'))
+      .attr('stroke', (link: PositionedLink) => (link.target.data.isPreview ? '#b37a3c' : '#c3b091'))
+      .attr('stroke-width', (link: PositionedLink) => (link.target.data.isPreview ? 1.0 : 1.2))
+      .attr('stroke-dasharray', (link: PositionedLink) => (link.target.data.isPreview ? '3 5' : 'none'))
       .transition(transition)
       .attr('opacity', 1)
       .attr('d', (link: PositionedLink) => linkPath(link.source, link.target));
@@ -1251,20 +1265,20 @@ export default function App() {
       .attr('rx', NODE_CORNER_RADIUS)
       .attr('ry', NODE_CORNER_RADIUS)
       .attr('fill', (node: PositionedNode) => {
-        if (node.data.id === selectedGhostId) return '#f0dfc5';
-        if (node.data.id === selectedNodeId) return '#f1dec1';
-        return '#fff4e4';
+        if (node.data.id === selectedGhostId) return '#e9d5b8';
+        if (node.data.id === selectedNodeId) return '#ead2ad';
+        return '#fffcf8';
       })
       .attr('stroke', (node: PositionedNode) => {
-        if (node.data.id === selectedGhostId) return '#7f4f20';
-        if (node.data.id === selectedNodeId) return '#9a622c';
-        return '#bfa388';
+        if (node.data.id === selectedGhostId) return '#8c5e31';
+        if (node.data.id === selectedNodeId) return '#a36d38';
+        return '#dccab4';
       })
-      .attr('stroke-width', (node: PositionedNode) => (node.data.id === selectedNodeId || node.data.id === selectedGhostId ? 1.8 : 1))
+      .attr('stroke-width', (node: PositionedNode) => (node.data.id === selectedNodeId || node.data.id === selectedGhostId ? 2 : 1.2))
       .style('filter', (node: PositionedNode) =>
         node.data.id === selectedNodeId || node.data.id === selectedGhostId
-          ? 'drop-shadow(0 2px 8px rgba(0,0,0,0.08))'
-          : 'none',
+          ? 'drop-shadow(0 4px 12px rgba(48,34,18,0.12))'
+          : 'drop-shadow(0 2px 4px rgba(0,0,0,0.02))',
       );
 
     nodeUpdate
@@ -1294,7 +1308,7 @@ export default function App() {
         },
       ]),
     );
-  }, [currentPreviewLabels, interactionMode, keyRegionClouds, selectedGhostId, selectedNodeId, showBoundingBoxes, trees]);
+  }, [currentPreviewLabels, interactionMode, keyRegionClouds, selectedGhostId, selectedNodeId, trees]);
 
   useEffect(() => {
     const handleMouseDown = (event: MouseEvent) => {
@@ -1327,6 +1341,14 @@ export default function App() {
     });
   }, [trees]);
 
+  useEffect(() => {
+    if (!autoSuggestAfterTreeChangeRef.current) {
+      return;
+    }
+    autoSuggestAfterTreeChangeRef.current = false;
+    void fetchSuggestions();
+  }, [trees]);
+
   const getOptions = (label: string) => {
     const baseLabel = label.split('_')[0];
     return EXPANSION_OPTIONS[baseLabel] || [['Unitary Substitute']];
@@ -1344,28 +1366,27 @@ export default function App() {
       }}
     >
       <div className="mx-auto flex h-[calc(100dvh-2rem)] w-full max-w-[1680px] flex-col gap-4">
-        <div className="rounded-[28px] border border-[#e4d8c8] bg-[#fffaf2]/88 px-5 py-4 shadow-[0_22px_72px_-44px_rgba(49,35,18,0.72)] backdrop-blur">
-          <div className="mb-3 flex flex-wrap items-end justify-between gap-4">
+        <div className="rounded-[24px] border border-[#e4d8c8] bg-[#fffaf2]/88 px-5 py-3 shadow-[0_20px_60px_-40px_rgba(49,35,18,0.6)] backdrop-blur">
+          <div className="mb-2 flex flex-wrap items-end justify-between gap-4">
             <div>
-              <p className="mb-1 text-[10px] uppercase tracking-[0.3em] text-[#8a7661]">Deterministic Harmonic Grammar</p>
-              <h1 className="scientific-text text-4xl leading-none tracking-tight text-[#241d18]">Harmonic Analysis Tree</h1>
+              <p className="mb-0.5 text-[9px] uppercase tracking-[0.3em] text-[#8a7661]">Deterministic Harmonic Grammar</p>
+              <h1 className="scientific-text text-3xl leading-none tracking-tight text-[#241d18]">Harmonic Analysis Tree</h1>
             </div>
 
-            <div className="max-w-xl text-right text-[12px] leading-5 text-[#6a5c4f]">
+            <div className="max-w-xl text-right text-[11px] leading-relaxed text-[#6a5c4f]">
               Tidy-tree spacing with explicit bar packing keeps branches stable while preserving substitutions and key regions.
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5 border-t border-[#e8dccd] pt-3">
+          <div className="flex flex-wrap items-center gap-2.5 border-t border-[#e8dccd] pt-2">
             <div className="mr-2 flex rounded-full border border-[#dacdbd] bg-white/80 p-1 shadow-inner">
               <button
                 onClick={() => {
                   setInteractionMode('pointer');
                   setChordPicker(null);
                 }}
-                className={`rounded-full px-3 py-2 transition-colors ${
-                  interactionMode === 'pointer' ? 'bg-[#f0dfc5] text-[#5f3d1f]' : 'text-[#8c7a67] hover:text-[#5f3d1f]'
-                }`}
+                className={`rounded-full px-3 py-2 transition-colors ${interactionMode === 'pointer' ? 'bg-[#f0dfc5] text-[#5f3d1f]' : 'text-[#8c7a67] hover:text-[#5f3d1f]'
+                  }`}
                 title="Pointer Mode"
               >
                 <MousePointer2 size={16} />
@@ -1376,9 +1397,8 @@ export default function App() {
                   setSelectedNodeId(null);
                   setSelectedGhostId(null);
                 }}
-                className={`rounded-full px-3 py-2 transition-colors ${
-                  interactionMode === 'adder' ? 'bg-[#f0dfc5] text-[#5f3d1f]' : 'text-[#8c7a67] hover:text-[#5f3d1f]'
-                }`}
+                className={`rounded-full px-3 py-2 transition-colors ${interactionMode === 'adder' ? 'bg-[#f0dfc5] text-[#5f3d1f]' : 'text-[#8c7a67] hover:text-[#5f3d1f]'
+                  }`}
                 title="Adder Mode"
               >
                 <PlusCircle size={16} />
@@ -1401,18 +1421,6 @@ export default function App() {
               {isLoadingSuggestions ? 'Suggesting...' : 'Suggest'}
             </button>
 
-            <div className="ml-auto flex items-center gap-3 rounded-full border border-[#dbcdbb] bg-white/75 px-3 py-1.5 text-[10px] uppercase tracking-[0.2em] text-[#7d6955]">
-              <input
-                type="checkbox"
-                id="bbox-toggle"
-                checked={showBoundingBoxes}
-                onChange={(event) => setShowBoundingBoxes(event.target.checked)}
-                className="h-3.5 w-3.5 cursor-pointer rounded border-[#cdbca7] text-[#8c5a2b] focus:ring-[#c89d67]"
-              />
-              <label htmlFor="bbox-toggle" className="cursor-pointer select-none">
-                Structure Boxes
-              </label>
-            </div>
           </div>
 
           {sendStatus && <p className="mt-2 text-[11px] italic text-[#6e6154]">{sendStatus}</p>}
@@ -1480,7 +1488,7 @@ export default function App() {
           )}
         </div>
 
-        <footer className="flex flex-wrap items-center justify-between gap-3 rounded-[22px] border border-[#e4d7c7] bg-[#fffaf2]/80 px-5 py-3 text-[13px] text-[#6f6153] shadow-[0_18px_60px_-44px_rgba(47,32,16,0.75)] backdrop-blur">
+        <footer className="flex flex-wrap items-center justify-between gap-3 rounded-[20px] border border-[#e4d7c7] bg-[#fffaf2]/80 px-5 py-1.5 text-[12px] text-[#6f6153] shadow-[0_15px_50px_-35px_rgba(47,32,16,0.65)] backdrop-blur">
           <span>Pan/zoom the canvas, click nodes to stage ghost substitutions, and use Suggest to refresh harmonic territories.</span>
           <span className="uppercase tracking-[0.2em] text-[#8a7661]">
             Depth {treeDepth} • {trees.length} bar{trees.length === 1 ? '' : 's'}

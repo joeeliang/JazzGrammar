@@ -32,6 +32,10 @@ export default defineConfig(({mode}) => {
           target: 'http://localhost:8000',
           changeOrigin: true,
         },
+        '/identify-chord': {
+          target: 'http://localhost:8000',
+          changeOrigin: true,
+        },
       },
     },
   };

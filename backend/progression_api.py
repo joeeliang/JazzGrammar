@@ -75,6 +75,7 @@ allowed_origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins or default_allowed_origins,
+    allow_origin_regex=r"^https://.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -109,34 +110,47 @@ def suggest_progression(payload: ChordSuggestionPayload) -> dict:
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        logger.exception("Unexpected error while computing suggestions for progression: %s", progression_text)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Suggestion engine failed: {type(error).__name__}",
+        ) from error
 
     key_seq = smooth_seq if payload.smooth and smooth_seq is not None else raw_seq
     per_chord = []
     total_items = 0
 
-    for index, chord in enumerate(chords):
-        key = key_seq[index]
-        ra = roman_numeral(key, chord)
-        suggestions = propose_substitutions(key, chord, ra)[: max(0, payload.max_per_chord)]
-        items = [
-            {
-                "symbol": item.symbol,
-                "roman": item.roman,
-                "label": item.label,
-                "why": item.why,
-            }
-            for item in suggestions
-        ]
-        total_items += len(items)
-        per_chord.append(
-            {
-                "index": index,
-                "input": chord.symbol,
-                "roman": ra.rn,
-                "key": key.short(),
-                "items": items,
-            }
-        )
+    try:
+        for index, chord in enumerate(chords):
+            key = key_seq[index]
+            ra = roman_numeral(key, chord)
+            suggestions = propose_substitutions(key, chord, ra)[: max(0, payload.max_per_chord)]
+            items = [
+                {
+                    "symbol": item.symbol,
+                    "roman": item.roman,
+                    "label": item.label,
+                    "why": item.why,
+                }
+                for item in suggestions
+            ]
+            total_items += len(items)
+            per_chord.append(
+                {
+                    "index": index,
+                    "input": chord.symbol,
+                    "roman": ra.rn,
+                    "key": key.short(),
+                    "items": items,
+                }
+            )
+    except Exception as error:
+        logger.exception("Unexpected error while building suggestion payload for progression: %s", progression_text)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Suggestion post-processing failed: {type(error).__name__}",
+        ) from error
 
     logger.info(
         "Generated %d suggestions for %d chords: %s",
