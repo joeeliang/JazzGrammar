@@ -11,12 +11,20 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from key_regions import (
-    compute_key_sequences,
-    propose_substitutions,
-    roman_numeral,
-)
-from overlap import build_overlap_payload
+try:
+    from .key_regions import (
+        compute_key_sequences,
+        propose_substitutions,
+        roman_numeral,
+    )
+    from .overlap import build_overlap_payload
+except ImportError:
+    from key_regions import (
+        compute_key_sequences,
+        propose_substitutions,
+        roman_numeral,
+    )
+    from overlap import build_overlap_payload
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
