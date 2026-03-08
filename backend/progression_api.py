@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +18,7 @@ try:
         roman_numeral,
     )
     from .overlap import build_overlap_payload
+    from .utils.chordidentify import Fingering, identify_chords
 except ImportError:
     from key_regions import (
         compute_key_sequences,
@@ -25,6 +26,7 @@ except ImportError:
         roman_numeral,
     )
     from overlap import build_overlap_payload
+    from utils.chordidentify import Fingering, identify_chords
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -49,6 +51,10 @@ class FretboardOverlapPayload(BaseModel):
     chord_b: str
 
 
+class ChordIdentifyPayload(BaseModel):
+    frets: List[Optional[int]] = Field(default_factory=list)
+
+
 app = FastAPI(title="Chord Progression API")
 
 default_allowed_origins = [
@@ -56,6 +62,8 @@ default_allowed_origins = [
     "http://127.0.0.1:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://chromachord.io",
+    "https://www.chromachord.io",
 ]
 
 allowed_origins = [
@@ -159,6 +167,25 @@ def fretboard_overlap(payload: FretboardOverlapPayload) -> dict:
         result.get("movement_cost"),
     )
     return result
+
+
+@app.post("/identify-chord")
+def identify_chord(payload: ChordIdentifyPayload) -> dict:
+    if len(payload.frets) != 6:
+        raise HTTPException(status_code=400, detail="Expected 6 frets (low E to high E).")
+
+    try:
+        fingering = Fingering(payload.frets)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    candidates = identify_chords(fingering, max_results=5)
+    return {
+        "candidates": [
+            {"name": candidate.name, "score": candidate.score}
+            for candidate in candidates[:5]
+        ]
+    }
 
 
 if __name__ == "__main__":

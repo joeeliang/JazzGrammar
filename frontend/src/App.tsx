@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { Download, Minus, MousePointer2, Plus, PlusCircle, RefreshCw } from 'lucide-react';
-import TranslucentFretboard, { FretboardOverlapData } from './guitar';
+import TranslucentFretboard, { ChordPickerCard, FretboardOverlapData } from './guitar';
 
 interface TreeNode {
   id: string;
@@ -83,12 +83,14 @@ const HORIZONTAL_STEP = 92;
 const LAYER_GAP = 140;
 const BAR_GAP = 90;
 const MIN_BAR_WIDTH = 150;
-const NODE_RADIUS = 10;
+const NODE_CORNER_RADIUS = 10;
 const TRANSITION_MS = 350;
-const ROOT_NODE_LABEL_FONT_SIZE = 12;
-const NODE_LABEL_FONT_SIZE = 18;
-const TERMINAL_LABEL_FONT_SIZE = 17;
 const KEY_REGION_LABEL_FONT_SIZE = 11;
+const CHORD_NODE_FONT_SIZE = 13;
+const CHORD_NODE_FONT_WEIGHT = 500;
+const CHORD_NODE_MIN_HEIGHT = 28;
+const CHORD_NODE_PADDING_X = 10;
+const CHORD_NODE_PADDING_Y = 6;
 
 // Tunable visual parameters for key-region clouds.
 // cloudHorizontalPadding: extra horizontal space beyond the region subtree width.
@@ -115,9 +117,66 @@ const KEY_REGION_COLORS = ['#c8d3e0', '#d9d2c6', '#ccd9cf', '#d5cfe0', '#d8d8c8'
 
 const MUSICAL_LABELS = ['I', 'ii', 'iii', 'IV', 'V', 'vi', 'vii°', 'V⁷', 'ii⁷', 'vi⁷', 'IV⁶', 'I⁶', 'V/V', 'V/IV'];
 const CHORD_NAMES = ['C', 'Dm', 'Em', 'F', 'G', 'Am', 'Bdim', 'G7', 'Dm7', 'Am7', 'F6', 'Cmaj7', 'Fm', 'Gm7'];
+<<<<<<< ours
+<<<<<<< ours
+=======
+=======
+<<<<<<< ours
+>>>>>>> theirs
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 const PROGRESSION_API_URL = (import.meta.env.VITE_PROGRESSION_API_URL as string | undefined)?.trim() || 'http://localhost:8000/progression';
 const SUGGESTIONS_API_URL = (import.meta.env.VITE_SUGGESTIONS_API_URL as string | undefined)?.trim() || 'http://localhost:8000/suggestions';
 const OVERLAP_API_URL = (import.meta.env.VITE_OVERLAP_API_URL as string | undefined)?.trim() || 'http://localhost:8000/fretboard-overlap';
+const CHORD_IDENTIFY_API_URL =
+  (import.meta.env.VITE_CHORD_IDENTIFY_URL as string | undefined)?.trim() || 'http://localhost:8000/identify-chord';
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+<<<<<<< ours
+=======
+>>>>>>> theirs
+>>>>>>> theirs
+const PROGRESSION_API_URL =
+  (import.meta.env.VITE_PROGRESSION_API_URL as string | undefined)?.trim() || '/progression';
+const SUGGESTIONS_API_URL =
+  (import.meta.env.VITE_SUGGESTIONS_API_URL as string | undefined)?.trim() || '/suggestions';
+const OVERLAP_API_URL =
+  (import.meta.env.VITE_OVERLAP_API_URL as string | undefined)?.trim() || '/fretboard-overlap';
+<<<<<<< ours
+<<<<<<< ours
+=======
+const CHORD_IDENTIFY_API_URL =
+  (import.meta.env.VITE_CHORD_IDENTIFY_URL as string | undefined)?.trim() || '/identify-chord';
+
+
+=======
+<<<<<<< ours
+>>>>>>> theirs
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+<<<<<<< ours
+=======
+>>>>>>> theirs
+>>>>>>> theirs
 
 const EXPANSION_OPTIONS: Record<string, string[][]> = {
   I: [['vi', 'ii', 'V', 'I'], ['IV', 'vii°', 'iii', 'vi'], ['I', 'V', 'vi', 'IV']],
@@ -151,16 +210,14 @@ const getMaxDepth = (trees: TreeNode[]) => {
   return Math.max(...trees.map(getTreeDepth));
 };
 
-const shouldShowInlineLabel = (node: d3.HierarchyNode<TreeNode>) =>
-  Boolean(node.data.isPreview || !node.parent || (node.children && node.children.length > 0));
-
-const estimateLabelSpan = (label: string, variant: 'node' | 'terminal') =>
-  variant === 'terminal' ? Math.max(54, label.length * 10 + 14) : Math.max(38, label.length * 8 + 14);
+const estimateLabelSpan = (label: string) => Math.max(28, label.length * 7.2 + CHORD_NODE_PADDING_X * 2);
 
 const getNodeHalfWidth = (node: d3.HierarchyNode<TreeNode>) => {
-  const variant = shouldShowInlineLabel(node) ? 'node' : 'terminal';
-  return estimateLabelSpan(node.data.label, variant) / 2;
+  return estimateLabelSpan(node.data.label) / 2;
 };
+
+const getNodeWidth = (node: d3.HierarchyNode<TreeNode>) => estimateLabelSpan(node.data.label);
+const getNodeHeight = () => Math.max(CHORD_NODE_MIN_HEIGHT, CHORD_NODE_FONT_SIZE + CHORD_NODE_PADDING_Y * 2);
 
 const translate = (x: number, y: number) => `translate(${x},${y})`;
 
@@ -321,7 +378,7 @@ export default function App() {
   const [currentPreviewLabels, setCurrentPreviewLabels] = useState<string[]>([]);
   const [showBoundingBoxes, setShowBoundingBoxes] = useState(false);
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('pointer');
-  const [chordInput, setChordInput] = useState<{ nodeId: string; x: number; y: number } | null>(null);
+  const [chordPicker, setChordPicker] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
   const [isSendingProgression, setIsSendingProgression] = useState(false);
@@ -525,16 +582,17 @@ export default function App() {
     setSelectedNodeId(null);
     setSelectedGhostId(null);
     setContextMenu(null);
-    setChordInput(null);
+    setChordPicker(null);
     setSendStatus(null);
   };
 
   const addBar = (screenX: number, screenY: number) => {
     const { x } = screenToDiagramPoint(screenX, screenY);
     const nextTrees = [...trees];
+    const nodeId = `root-${Date.now()}`;
 
     nextTrees.push({
-      id: `root-${Date.now()}`,
+      id: nodeId,
       label: `Bar ${nextTrees.length + 1}`,
       initialX: x,
       initialY: 0,
@@ -545,6 +603,7 @@ export default function App() {
     setFretboardOverlap(null);
     setOverlapError(null);
     setContextMenu(null);
+    setChordPicker({ nodeId, x: screenX, y: screenY });
   };
 
   const addChord = (nodeId: string, chordLabel: string) => {
@@ -578,7 +637,7 @@ export default function App() {
     setFretboardOverlap(null);
     setOverlapError(null);
     setContextMenu(null);
-    setChordInput(null);
+    setChordPicker(null);
   };
 
   const findNodeLabelById = (nodeId: string): string | null => {
@@ -936,7 +995,7 @@ export default function App() {
         setSelectedNodeId(null);
         setSelectedGhostId(null);
         setContextMenu(null);
-        setChordInput(null);
+        setChordPicker(null);
       })
       .on('contextmenu', (event) => {
         if (event.target !== svg.node()) {
@@ -1096,34 +1155,6 @@ export default function App() {
       .attr('opacity', 1)
       .attr('d', (link: PositionedLink) => linkPath(link.source, link.target));
 
-    const terminalLinkSelection = mainGroup
-      .selectAll<SVGLineElement, PositionedNode>('line.terminal-link')
-      .data(leaves, (leaf: any) => leaf.data.id);
-
-    terminalLinkSelection.exit().transition(transition).attr('opacity', 0).remove();
-
-    const terminalLinkEnter = terminalLinkSelection
-      .enter()
-      .append('line')
-      .attr('class', 'terminal-link pointer-events-none')
-      .attr('stroke', '#80654a')
-      .attr('stroke-width', 1)
-      .attr('stroke-dasharray', '3 5')
-      .attr('opacity', 0)
-      .attr('x1', (leaf) => getStartingPoint(leaf).x)
-      .attr('x2', (leaf) => getStartingPoint(leaf).x)
-      .attr('y1', (leaf) => getStartingPoint(leaf).y)
-      .attr('y2', (leaf) => getStartingPoint(leaf).y);
-
-    terminalLinkEnter
-      .merge(terminalLinkSelection as any)
-      .transition(transition)
-      .attr('opacity', 1)
-      .attr('x1', (leaf: PositionedNode) => leaf.layoutX)
-      .attr('x2', (leaf: PositionedNode) => leaf.layoutX)
-      .attr('y1', (leaf: PositionedNode) => leaf.layoutY)
-      .attr('y2', terminalY);
-
     const nodeSelection = mainGroup
       .selectAll<SVGGElement, PositionedNode>('g.node')
       .data(nodes, (node: any) => node.data.id);
@@ -1148,36 +1179,49 @@ export default function App() {
         return translate(start.x, start.y);
       });
 
-    nodeEnter.append('circle').attr('class', 'node-hit').attr('r', 22).attr('fill', 'transparent');
-
-    nodeEnter
-      .append('circle')
-      .attr('class', 'node-halo')
-      .attr('r', 15)
-      .attr('fill', 'rgba(194, 153, 97, 0.18)')
-      .attr('opacity', 0);
-
-    nodeEnter.append('circle').attr('class', 'node-dot');
+    nodeEnter.append('rect').attr('class', 'node-hit').attr('fill', 'transparent');
+    nodeEnter.append('rect').attr('class', 'node-chip');
 
     nodeEnter
       .append('text')
       .attr('class', 'node-label scientific-text')
       .attr('text-anchor', 'middle')
+      .attr('dominant-baseline', 'middle')
       .attr('pointer-events', 'none');
 
     const nodeUpdate = nodeEnter.merge(nodeSelection as any);
 
     nodeUpdate
       .style('cursor', (node: PositionedNode) => {
-        if (node.data.isPreview) {
+        if (interactionMode === 'adder') {
           return 'pointer';
         }
 
-        if (interactionMode === 'adder') {
-          return 'cell';
+        return 'pointer';
+      })
+      .on('mouseenter', function (event: any, node: PositionedNode) {
+        if (node.data.id === selectedNodeId || node.data.id === selectedGhostId) {
+          return;
         }
-
-        return node.parent ? 'pointer' : 'default';
+        const target = d3.select(this).select<SVGRectElement>('rect.node-chip');
+        target
+          .transition()
+          .duration(120)
+          .attr('fill', '#edf1f5')
+          .attr('stroke', 'rgba(0,0,0,0.2)')
+          .style('filter', 'drop-shadow(0 2px 8px rgba(0,0,0,0.08))');
+      })
+      .on('mouseleave', function (event: any, node: PositionedNode) {
+        if (node.data.id === selectedNodeId || node.data.id === selectedGhostId) {
+          return;
+        }
+        const target = d3.select(this).select<SVGRectElement>('rect.node-chip');
+        target
+          .transition()
+          .duration(120)
+          .attr('fill', '#f6f7f9')
+          .attr('stroke', 'rgba(0,0,0,0.12)')
+          .style('filter', 'none');
       })
       .on('click', (event: any, node: PositionedNode) => {
         event.stopPropagation();
@@ -1185,7 +1229,7 @@ export default function App() {
 
         if (interactionMode === 'adder') {
           if (!node.data.isPreview) {
-            setChordInput({
+            setChordPicker({
               nodeId: node.data.id,
               x: event.clientX,
               y: event.clientY,
@@ -1241,73 +1285,57 @@ export default function App() {
     nodeUpdate.transition(transition).attr('opacity', 1).attr('transform', (node: PositionedNode) => translate(node.layoutX, node.layoutY));
 
     nodeUpdate
-      .select<SVGCircleElement>('circle.node-halo')
-      .transition(transition)
-      .attr('opacity', (node: PositionedNode) => (node.data.id === selectedNodeId || node.data.id === selectedGhostId ? 1 : 0));
+      .select<SVGRectElement>('rect.node-hit')
+      .attr('x', (node: PositionedNode) => -Math.max(14, getNodeWidth(node) / 2))
+      .attr('y', -CHORD_NODE_MIN_HEIGHT / 2)
+      .attr('width', (node: PositionedNode) => Math.max(28, getNodeWidth(node)))
+      .attr('height', CHORD_NODE_MIN_HEIGHT)
+      .attr('rx', NODE_CORNER_RADIUS)
+      .attr('ry', NODE_CORNER_RADIUS);
 
     nodeUpdate
-      .select<SVGCircleElement>('circle.node-dot')
-      .attr('stroke-linejoin', 'round')
-      .attr('stroke-linecap', 'round')
+      .select<SVGRectElement>('rect.node-chip')
       .transition(transition)
-      .attr('r', (node: PositionedNode) => (!node.parent ? 8.5 : node.data.isPreview ? 6.5 : NODE_RADIUS))
+      .attr('x', (node: PositionedNode) => -getNodeWidth(node) / 2)
+      .attr('y', -getNodeHeight() / 2)
+      .attr('width', (node: PositionedNode) => getNodeWidth(node))
+      .attr('height', getNodeHeight())
+      .attr('rx', NODE_CORNER_RADIUS)
+      .attr('ry', NODE_CORNER_RADIUS)
       .attr('fill', (node: PositionedNode) => {
-        if (!node.parent) return '#8c5a2b';
-        if (node.data.id === selectedGhostId) return '#b87932';
-        if (node.data.id === selectedNodeId) return '#f1dec1';
-        return node.data.isPreview ? '#fff4e4' : '#fffdfa';
+        if (node.data.id === selectedGhostId) return '#f4e7d4';
+        if (node.data.id === selectedNodeId) return '#e9eef5';
+        return '#f6f7f9';
       })
       .attr('stroke', (node: PositionedNode) => {
-        if (!node.parent) return '#5c3b1f';
-        if (node.data.id === selectedGhostId) return '#7f4f20';
-        if (node.data.id === selectedNodeId) return '#9a622c';
-        return node.data.isPreview ? '#b37a3c' : '#3f3328';
+        if (node.data.id === selectedGhostId) return '#b67a3c';
+        if (node.data.id === selectedNodeId) return '#5b7fab';
+        return 'rgba(0,0,0,0.12)';
       })
-      .attr('stroke-width', (node: PositionedNode) => (node.data.id === selectedNodeId || node.data.id === selectedGhostId ? 2.2 : 1.4))
-      .attr('stroke-dasharray', (node: PositionedNode) => (node.data.isPreview ? '4 4' : 'none'));
+      .attr('stroke-width', (node: PositionedNode) => (node.data.id === selectedNodeId || node.data.id === selectedGhostId ? 1.8 : 1))
+      .style('filter', (node: PositionedNode) =>
+        node.data.id === selectedNodeId || node.data.id === selectedGhostId
+          ? 'drop-shadow(0 2px 8px rgba(0,0,0,0.08))'
+          : 'none',
+      );
 
     nodeUpdate
       .select<SVGTextElement>('text.node-label')
-      .text((node: PositionedNode) => (shouldShowInlineLabel(node) ? node.data.label : ''))
+      .text((node: PositionedNode) => node.data.label)
       .transition(transition)
-      .attr('opacity', (node: PositionedNode) => (shouldShowInlineLabel(node) ? 1 : 0))
-      .attr('dy', (node: PositionedNode) => (!node.parent ? -32 : -18))
-      .attr('fill', (node: PositionedNode) => (!node.parent ? '#6f655c' : node.data.isPreview ? '#9a622c' : '#241d18'))
-      .attr('font-size', (node: PositionedNode) => (!node.parent ? ROOT_NODE_LABEL_FONT_SIZE : NODE_LABEL_FONT_SIZE))
-      .attr('font-style', (node: PositionedNode) => (!node.parent ? 'normal' : 'italic'))
-      .attr('font-weight', (node: PositionedNode) => (!node.parent ? 600 : 500))
-      .attr('letter-spacing', (node: PositionedNode) => (!node.parent ? '0.18em' : '0.02em'));
+      .attr('x', 0)
+      .attr('y', 0)
+      .attr('opacity', 1)
+      .attr('fill', '#111827')
+      .attr('font-size', CHORD_NODE_FONT_SIZE)
+      .attr('font-style', 'normal')
+      .attr('font-weight', CHORD_NODE_FONT_WEIGHT)
+      .attr('line-height', 1);
 
     const selectedNodes = nodeUpdate.filter(
       (node: PositionedNode) => node.data.id === selectedNodeId || node.data.id === selectedGhostId,
     );
     selectedNodes.raise();
-
-    const terminalLabelSelection = mainGroup
-      .selectAll<SVGTextElement, PositionedNode>('text.terminal-label')
-      .data(leaves, (leaf: any) => leaf.data.id);
-
-    terminalLabelSelection.exit().transition(transition).attr('opacity', 0).remove();
-
-    const terminalLabelEnter = terminalLabelSelection
-      .enter()
-      .append('text')
-      .attr('class', 'terminal-label scientific-text')
-      .attr('text-anchor', 'middle')
-      .attr('fill', '#241d18')
-      .attr('font-size', TERMINAL_LABEL_FONT_SIZE)
-      .attr('font-style', 'italic')
-      .attr('opacity', 0)
-      .attr('x', (leaf) => getStartingPoint(leaf).x)
-      .attr('y', terminalY + 28);
-
-    terminalLabelEnter
-      .merge(terminalLabelSelection as any)
-      .text((leaf: PositionedNode) => leaf.data.label)
-      .transition(transition)
-      .attr('opacity', 1)
-      .attr('x', (leaf: PositionedNode) => leaf.layoutX)
-      .attr('y', terminalY + 30);
 
     nodePositionRef.current = new Map(
       nodes.map((node) => [
@@ -1326,8 +1354,8 @@ export default function App() {
         setContextMenu(null);
       }
 
-      if (chordInput && !document.querySelector('.chord-input-container')?.contains(event.target as Node)) {
-        setChordInput(null);
+      if (chordPicker && !document.querySelector('.chord-picker-container')?.contains(event.target as Node)) {
+        setChordPicker(null);
       }
     };
 
@@ -1336,7 +1364,7 @@ export default function App() {
     return () => {
       window.removeEventListener('mousedown', handleMouseDown);
     };
-  }, [chordInput, contextMenu]);
+  }, [chordPicker, contextMenu]);
 
   useEffect(() => {
     const currentLeafNodeIds = getCurrentLeafNodeIds();
@@ -1385,7 +1413,7 @@ export default function App() {
               <button
                 onClick={() => {
                   setInteractionMode('pointer');
-                  setChordInput(null);
+                  setChordPicker(null);
                 }}
                 className={`rounded-full px-3 py-2 transition-colors ${
                   interactionMode === 'pointer' ? 'bg-[#f0dfc5] text-[#5f3d1f]' : 'text-[#8c7a67] hover:text-[#5f3d1f]'
@@ -1466,7 +1494,7 @@ export default function App() {
               ) : (
                 <button
                   onClick={() => {
-                    setChordInput({
+                    setChordPicker({
                       nodeId: contextMenu.nodeId!,
                       x: contextMenu.x,
                       y: contextMenu.y,
@@ -1481,25 +1509,13 @@ export default function App() {
             </div>
           )}
 
-          {chordInput && (
-            <div
-              className="chord-input-container fixed z-[110] rounded-2xl border border-[#e3d6c4] bg-[#fffaf4] p-2 shadow-[0_24px_80px_-40px_rgba(47,32,16,0.9)]"
-              style={{ left: chordInput.x, top: chordInput.y }}
-            >
-              <input
-                autoFocus
-                type="text"
-                placeholder="Chord name..."
-                className="w-44 rounded-xl border border-[#eadfce] bg-white px-3 py-2 text-sm text-[#3f3328] outline-none ring-0 placeholder:text-[#9b8873] focus:border-[#cda16a]"
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    addChord(chordInput.nodeId, (event.target as HTMLInputElement).value);
-                  } else if (event.key === 'Escape') {
-                    setChordInput(null);
-                  }
-                }}
-              />
-            </div>
+          {chordPicker && (
+            <ChordPickerCard
+              apiUrl={CHORD_IDENTIFY_API_URL}
+              position={{ x: chordPicker.x, y: chordPicker.y }}
+              onPick={(chordName) => addChord(chordPicker.nodeId, chordName)}
+              onClose={() => setChordPicker(null)}
+            />
           )}
 
           {(isLoadingOverlap || overlapError || fretboardOverlap) && (
